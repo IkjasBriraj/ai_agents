@@ -6,6 +6,7 @@
 
 ## 📽️ Project Presentation
 - 📊 **[SeniorAgent Orchestrator Presentation (PPTX)](docs/SeniorAgent_Orchestrator.pptx)**
+- 📄 **[SeniorAgent Orchestrator Presentation (PDF)](docs/SeniorAgent_Orchestrator.pdf)**
 
 ## 📂 Documentation
 All project documentation is organized in the `docs/` directory:
