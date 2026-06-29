@@ -4,6 +4,26 @@
 
 ---
 
+## 📽️ Project Presentation
+- 📊 **[SeniorAgent Orchestrator Presentation (PPTX)](docs/SeniorAgent_Orchestrator.pptx)**
+
+## 📂 Documentation
+All project documentation is organized in the `docs/` directory:
+- [AI Guide Integration](docs/AI_GUIDE_INTEGRATION.md)
+- [Complete Solution Overview](docs/COMPLETE_SOLUTION.md)
+- [File Operations Guide](docs/FILE_OPERATIONS_GUIDE.md)
+- [Final Setup Guide](docs/FINAL_SETUP.md)
+- [Fixes Applied](docs/FIXES_APPLIED.md)
+- [Fix Summary](docs/FIX_SUMMARY.md)
+- [Model Update Notes](docs/MODEL_UPDATE.md)
+- [Multi-Agent System Details](docs/MULTI_AGENT_SYSTEM.md)
+- [Quick Start Guide](docs/QUICK_START.md)
+- [Multi-Agent Quick Start Guide](docs/QUICK_START_MULTI_AGENT.md)
+- [Readme Gemma4](docs/README_GEMMA4.md)
+- [Frontend Sub-project Readme](docs/frontend-README.md)
+
+---
+
 ## 🌟 Foundational Pillars
 
 SeniorAgent is engineered at the convergence of three core pillars:
