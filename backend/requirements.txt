@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+httpx
+sqlalchemy
+pydantic
+python-multipart
+aiosqlite
+langchain
+langchain-community
+langgraph
+litellm

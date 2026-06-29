@@ -1,0 +1,15 @@
+{
+  "agent_tools": {
+    "code": [
+      "execute_code",
+      "generate_code",
+      "file_operation",
+      "create_project",
+      "analyze_code",
+      "execute_terminal",
+      "schedule_task"
+    ]
+  },
+  "allowed_paths": [],
+  "allowed_commands": []
+}

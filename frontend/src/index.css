@@ -1,0 +1,113 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap');
+
+@import "tailwindcss";
+@plugin "tailwindcss-animate";
+
+@theme {
+  --color-ibm-blue: #0f62fe;
+  --color-ibm-dark: #161616;
+  --color-ibm-gray-10: #f4f4f4;
+  --color-ibm-gray-20: #e0e0e0;
+  --color-ibm-gray-80: #393939;
+  --color-ibm-gray-90: #262626;
+  --color-ibm-gray-100: #161616;
+  
+  --font-sans: "IBM Plex Sans", Inter, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", monospace;
+  
+  --radius-none: 0rem;
+
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+}
+
+@layer base {
+  :root {
+    --background: 272 40% 98%; /* Beautiful soft lavender/purple background */
+    --foreground: 272 60% 15%; /* Deep purple text */
+    --card: 0 0% 100%;
+    --card-foreground: 272 60% 15%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 272 60% 15%;
+    --primary: 272 70% 50%; /* Vibrant purple primary */
+    --primary-foreground: 0 0% 100%;
+    --secondary: 142 50% 96%; /* Soft pastel mint green background */
+    --secondary-foreground: 142 85% 18%; /* Deep forest/emerald green text */
+    --muted: 272 25% 94%; /* Soft muted lavender */
+    --muted-foreground: 272 15% 45%;
+    --accent: 142 70% 45%; /* High-tech glowing green/emerald accent */
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 272 20% 88%; /* Lavender borders */
+    --input: 272 20% 88%;
+    --ring: 142 70% 45%;
+    --radius: 0rem; /* IBM Carbon style is sharp */
+  }
+
+  .dark {
+    --background: 0 0% 8.6%;
+    --foreground: 210 40% 98%;
+    --card: 0 0% 10.2%;
+    --card-foreground: 210 40% 98%;
+    --popover: 0 0% 10.2%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 217.2 91.2% 59.8%;
+    --primary-foreground: 222.2 47.4% 11.2%;
+    --secondary: 217.2 32.6% 17.5%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217.2 32.6% 17.5%;
+    --muted-foreground: 215 20.2% 65.1%;
+    --accent: 217.2 32.6% 17.5%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 217.2 32.6% 17.5%;
+    --input: 217.2 32.6% 17.5%;
+    --ring: 224.3 76.3% 48%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground font-sans;
+    font-size: 1.125rem; /* 18px base for seniors */
+    line-height: 1.6;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-semibold tracking-tight;
+  }
+}
+
+/* Custom IBM-inspired utilities */
+.carbon-border {
+  border: 1px solid var(--color-ibm-gray-80);
+}
+
+.carbon-card {
+  @apply bg-card p-6 border border-border transition-all duration-200 hover:border-ibm-blue;
+}
+
+.latency-badge {
+  @apply px-2 py-0.5 text-xs font-mono font-medium rounded-none;
+}
