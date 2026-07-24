@@ -58,7 +58,7 @@ gantt
     axisFormat %s
     
     section The Brain
-    Ollama (qwen3.5:9b) :active, 0, 10
+    Ollama (granite4.1:8b) :active, 0, 10
     
     section The Backend
     FastAPI (Python 3.10+) :active, 10, 20
@@ -67,7 +67,7 @@ gantt
     React / Vite (Node.js) :active, 20, 30
 ```
 
-1. **The Brain (Port 11434)**: Ollama running `qwen3.5:9b` locally.
+1. **The Brain (Port 11434)**: Ollama running `granite4.1:8b` locally.
 2. **The Backend (Port 8000)**: Python 3.10+ and FastAPI handling logic, database mappings, and background task scheduling.
 3. **The Frontend (Port 5173)**: Node.js and React/Vite powering the high-contrast user interface.
 
@@ -78,7 +78,7 @@ gantt
 ### 1. Model Initialization (Ollama)
 Ensure your local Ollama server is running, and pull the default model:
 ```bash
-ollama pull qwen3.5:9b
+ollama pull granite4.1:8b
 ```
 
 ### 2. Backend Initialization

@@ -168,3 +168,112 @@ def register_and_wait_for_command_permission(
                 del _pending_permissions[session_id][key]
             except KeyError:
                 pass
+
+
+# Registry of pending plan approvals
+# Structure: session_id -> { plan_path: (asyncio.Event, decision_dict, loop) }
+# where decision_dict is {"plan_content": str, "approved": bool, "resolved": bool}
+_pending_plans: Dict[str, Dict[str, Tuple[asyncio.Event, Dict[str, Any], asyncio.AbstractEventLoop]]] = {}
+
+def resolve_plan(session_id: str, plan_path: str, plan_content: str, approved: bool) -> bool:
+    """Set the event and record the decision from the user for the plan"""
+    if session_id in _pending_plans and plan_path in _pending_plans[session_id]:
+        event, decision, loop = _pending_plans[session_id][plan_path]
+        decision["plan_content"] = plan_content
+        decision["approved"] = approved
+        decision["resolved"] = True
+        
+        # Trigger event.set() thread-safely in the loop thread
+        loop.call_soon_threadsafe(event.set)
+        return True
+    return False
+
+def register_and_wait_for_plan_approval(
+    session_id: str,
+    plan_content: str,
+    plan_path: str,
+    queue: asyncio.Queue,
+    loop: asyncio.AbstractEventLoop,
+    timeout: float = 300.0
+) -> str:
+    """
+    Registers a plan approval request, pushes it to the frontend queue,
+    and blocks the current thread waiting for the user to edit and approve it.
+    """
+    # Create the Event on the running loop thread-safely
+    async def create_event():
+        return asyncio.Event()
+        
+    future_event = asyncio.run_coroutine_threadsafe(create_event(), loop)
+    try:
+        event = future_event.result(timeout=5.0)
+    except Exception as e:
+        logger.error(f"Failed to create asyncio.Event in loop thread: {e}")
+        event = asyncio.Event() # fallback
+        
+    decision = {"plan_content": plan_content, "approved": False, "resolved": False}
+    
+    if session_id not in _pending_plans:
+        _pending_plans[session_id] = {}
+    _pending_plans[session_id][plan_path] = (event, decision, loop)
+    
+    # Yield the plan request to the frontend stream
+    loop.call_soon_threadsafe(
+        queue.put_nowait,
+        {
+            "type": "plan_request",
+            "plan_path": plan_path,
+            "plan_content": plan_content,
+            "session_id": session_id,
+            "done": False
+        }
+    )
+    
+    logger.info(f"Plan approval request sent for plan_path: {plan_path}. Waiting up to {timeout}s...")
+    
+    # Wait for the event in the main loop thread-safely
+    async def wait_coro():
+        try:
+            await asyncio.wait_for(event.wait(), timeout=timeout)
+            return decision.get("approved", False)
+        except asyncio.TimeoutError:
+            logger.warning(f"Plan approval request timed out for path: {plan_path}")
+            return False
+            
+    future = asyncio.run_coroutine_threadsafe(wait_coro(), loop)
+    
+    try:
+        # Blocks the current tool execution thread until resolved
+        result = future.result(timeout=timeout + 2.0)
+        if result:
+            return decision.get("plan_content", plan_content)
+        else:
+            return plan_content
+    except Exception as e:
+        logger.error(f"Error waiting for plan approval: {e}")
+        return plan_content
+    finally:
+        # Clean up the entry
+        if session_id in _pending_plans and plan_path in _pending_plans[session_id]:
+            try:
+                del _pending_plans[session_id][plan_path]
+            except KeyError:
+                pass
+
+# Session cancellation tracking
+_cancelled_sessions = set()
+
+def cancel_session(session_id: str):
+    """Mark a session as cancelled to halt background execution threads"""
+    logger.info(f"Cancelling session: {session_id}")
+    _cancelled_sessions.add(session_id)
+
+def is_session_cancelled(session_id: str) -> bool:
+    """Check if a session has been cancelled"""
+    return session_id in _cancelled_sessions
+
+def clear_session_cancellation(session_id: str):
+    """Clear the cancellation status for a session"""
+    logger.info(f"Clearing cancellation for session: {session_id}")
+    if session_id in _cancelled_sessions:
+        _cancelled_sessions.remove(session_id)

@@ -1,6 +1,7 @@
 import axios from 'axios';
 
 const API_BASE = "http://localhost:8000";
+axios.defaults.timeout = 300000; // 5-minute timeout for agent execution calls
 
 export interface Agent {
   id: string;
@@ -165,6 +166,11 @@ export const OllamaService = {
 
   async updateMultiAgentConfig(config: any): Promise<any> {
     const response = await axios.post(`${API_BASE}/api/multi-agent/config`, config);
+    return response.data;
+  },
+
+  async stopMultiAgent(sessionId: string = 'default'): Promise<any> {
+    const response = await axios.post(`${API_BASE}/api/multi-agent/agents/stop?session_id=${sessionId}`);
     return response.data;
   },
 
@@ -383,6 +389,156 @@ export const OllamaService = {
       granted
     });
     return response.data;
+  },
+
+  // --- Plan Approval ---
+  async respondToPlanApproval(sessionId: string, planPath: string, planContent: string, approved: boolean): Promise<any> {
+    const response = await axios.post(`${API_BASE}/api/multi-agent/permission/plan/respond`, {
+      session_id: sessionId,
+      plan_path: planPath,
+      plan_content: planContent,
+      approved
+    });
+    return response.data;
+  },
+
+  // ====== Agent Mode ======
+  async agentModeStatus(): Promise<{status: string; claude_code_available: boolean; ollama_model: string; mode: string}> {
+    const response = await axios.get(`${API_BASE}/api/multi-agent/agent-mode/status`);
+    return response.data;
+  },
+
+  async agentModeChatStream(
+    prompt: string,
+    cwd: string,
+    onEvent: (event: any) => void,
+    onError: (err: any) => void,
+    filePath?: string,
+    fileContent?: string,
+    sessionId?: string
+  ): Promise<AbortController> {
+    const controller = new AbortController();
+    fetch(`${API_BASE}/api/multi-agent/agent-mode/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt,
+        cwd,
+        file_path: filePath || null,
+        file_content: fileContent || null,
+        session_id: sessionId || 'default'
+      }),
+      signal: controller.signal
+    })
+    .then(async (response) => {
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      if (!response.body) throw new Error('No response body');
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const dataStr = line.slice(6).trim();
+              if (dataStr === '') continue;
+              try {
+                const data = JSON.parse(dataStr);
+                onEvent(data);
+              } catch (e) { console.error('Error parsing SSE:', e); }
+            }
+          }
+        }
+      } catch (error: any) {
+        if (error.name !== 'AbortError') onError(error);
+      } finally { reader.releaseLock(); }
+    })
+    .catch((err) => { if (err.name !== 'AbortError') onError(err); });
+    return controller;
+  },
+
+  async agentModeQuickActionStream(
+    action: string,
+    filePath: string,
+    fileContent: string,
+    cwd: string,
+    onEvent: (event: any) => void,
+    onError: (err: any) => void,
+    sessionId?: string
+  ): Promise<AbortController> {
+    const controller = new AbortController();
+    fetch(`${API_BASE}/api/multi-agent/agent-mode/quick-action`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action,
+        file_path: filePath,
+        file_content: fileContent,
+        cwd,
+        session_id: sessionId || 'default'
+      }),
+      signal: controller.signal
+    })
+    .then(async (response) => {
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      if (!response.body) throw new Error('No response body');
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const dataStr = line.slice(6).trim();
+              if (dataStr === '') continue;
+              try {
+                const data = JSON.parse(dataStr);
+                onEvent(data);
+              } catch (e) { console.error('Error parsing SSE:', e); }
+            }
+          }
+        }
+      } catch (error: any) {
+        if (error.name !== 'AbortError') onError(error);
+      } finally { reader.releaseLock(); }
+    })
+    .catch((err) => { if (err.name !== 'AbortError') onError(err); });
+    return controller;
+  },
+
+  async getAgentModeHistory(sessionId: string = 'default'): Promise<any> {
+    const response = await axios.get(`${API_BASE}/api/multi-agent/agent-mode/history?session_id=${sessionId}`);
+    return response.data;
+  },
+
+  async clearAgentModeHistory(sessionId: string = 'default'): Promise<any> {
+    const response = await axios.delete(`${API_BASE}/api/multi-agent/agent-mode/history?session_id=${sessionId}`);
+    return response.data;
+  },
+
+  async transcribeVoice(audioBlob: Blob): Promise<string> {
+    const formData = new FormData();
+    formData.append('file', audioBlob, 'audio.wav');
+    const response = await axios.post(`${API_BASE}/api/multi-agent/agents/voice/transcribe`, formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
+    if (response.data.status === 'error') {
+      throw new Error(response.data.message || 'Voice transcription failed');
+    }
+    return response.data.text ?? '';
   }
 };
+
 

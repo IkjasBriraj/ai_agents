@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Float, Integer, JSON, DateTime, ForeignKey, Text, Boolean
+from sqlalchemy import Column, String, Float, Integer, JSON, DateTime, ForeignKey, Text, Boolean, Index
 from sqlalchemy.orm import declarative_base, relationship
 from datetime import datetime
 
@@ -24,7 +24,7 @@ class AgentModel(Base):
     name = Column(String, nullable=False)
     persona = Column(Text, nullable=False)
     system_prompt = Column(Text, nullable=False)
-    base_model = Column(String, default="qwen3.5:9b")
+    base_model = Column(String, default="granite4.1:8b")
     ollama_base_url = Column(String, default="http://localhost:11434")
     
     # Custom & system tool names, and registered MCP server IDs
@@ -57,7 +57,7 @@ class ChatMessageModel(Base):
     __tablename__ = "chat_messages"
     id = Column(Integer, primary_key=True, autoincrement=True)
     session_id = Column(String, index=True, nullable=False)
-    agent_id = Column(String, ForeignKey("agents.id", ondelete="CASCADE"), nullable=True)
+    agent_id = Column(String, ForeignKey("agents.id", ondelete="CASCADE"), nullable=True, index=True)
     role = Column(String, nullable=False) # 'human', 'ai', 'system'
     content = Column(Text, nullable=False)
     
@@ -66,13 +66,13 @@ class ChatMessageModel(Base):
     completion_tokens = Column(Integer, default=0)
     total_tokens = Column(Integer, default=0)
     
-    timestamp = Column(DateTime, default=datetime.utcnow)
+    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
 
 class PerformanceLogModel(Base):
     """Performance metrics including token usage leaderboard data."""
     __tablename__ = "performance_logs"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    agent_id = Column(String, ForeignKey("agents.id", ondelete="CASCADE"), nullable=False)
+    agent_id = Column(String, ForeignKey("agents.id", ondelete="CASCADE"), nullable=False, index=True)
     ttft = Column(Float, nullable=False)
     total_time = Column(Float, nullable=False)
     
@@ -81,7 +81,7 @@ class PerformanceLogModel(Base):
     completion_tokens = Column(Integer, default=0)
     total_tokens = Column(Integer, default=0)
     
-    timestamp = Column(DateTime, default=datetime.utcnow)
+    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
 
 class WorkflowModel(Base):
     """Stores visual execution graphs/pipelines of agents."""
@@ -100,8 +100,11 @@ class ScheduledTaskModel(Base):
     name = Column(String, nullable=False)
     prompt = Column(Text, nullable=False)
     interval_minutes = Column(Integer, nullable=True)  # None = one-time task
-    run_at = Column(DateTime, nullable=False)  # Next scheduled execution time
+    run_at = Column(DateTime, nullable=False, index=True)  # Next scheduled execution time
     last_run = Column(DateTime, nullable=True)  # Last execution timestamp
-    status = Column(String, default="active")  # active, paused, completed, running
+    status = Column(String, default="active", index=True)  # active, paused, completed, running
     history = Column(JSON, default=list)  # List of {timestamp, status, summary}
     created_at = Column(DateTime, default=datetime.utcnow)
+
+Index('idx_scheduled_tasks_status_run_at', ScheduledTaskModel.status, ScheduledTaskModel.run_at)
+

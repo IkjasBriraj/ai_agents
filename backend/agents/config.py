@@ -9,8 +9,19 @@ from pathlib import Path
 # Workspace directory where agents can create files
 AGENT_WORKSPACE_DIR = r"D:\learning\code\website"
 
-# Ensure the workspace directory exists
+# Screenshots directory for browser automation
+SCREENSHOTS_DIR = os.path.join(AGENT_WORKSPACE_DIR, "_screenshots")
+
+# Vision model for UI screenshot analysis
+VISION_MODEL = "gemma4:26b"
+
+# Documents directory for presentations and spreadsheets
+DOCUMENTS_DIR = os.path.join(AGENT_WORKSPACE_DIR, "_documents")
+
+# Ensure the workspace, screenshots, and documents directories exist
 os.makedirs(AGENT_WORKSPACE_DIR, exist_ok=True)
+os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
+os.makedirs(DOCUMENTS_DIR, exist_ok=True)
 
 # Safety settings
 ALLOWED_EXTENSIONS = [
@@ -18,7 +29,9 @@ ALLOWED_EXTENSIONS = [
     '.json', '.yaml', '.yml', '.md', '.txt', '.env', '.gitignore',
     '.sql', '.sh', '.bat', '.ps1', '.xml', '.toml', '.ini',
     '.vue', '.svelte', '.php', '.java', '.c', '.cpp', '.h',
-    '.go', '.rs', '.rb', '.swift', '.kt', '.dart'
+    '.go', '.rs', '.rb', '.swift', '.kt', '.dart', '.csv',
+    '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg',
+    '.pptx', '.xlsx', '.xls', '.pdf', '.docx'
 ]
 
 # Maximum file size for reading (10MB)
@@ -52,26 +65,20 @@ def is_safe_path(path: str) -> bool:
             
         abs_path_norm = norm_case(abs_path)
         
-        if allowed_paths:
-            # If the user has configured specific allowed paths, check if target is inside any of them
-            for allowed in allowed_paths:
-                allowed_abs = os.path.abspath(allowed)
-                allowed_norm = norm_case(allowed_abs)
-                if abs_path_norm == allowed_norm:
-                    return True
-                # Add directory separator to prevent partial string matches
-                prefix = allowed_norm if allowed_norm.endswith(os.sep) else allowed_norm + os.sep
-                if abs_path_norm.startswith(prefix):
-                    return True
-            return False
+        # Combine configured allowed paths with workspace and current working directory
+        all_allowed = list(allowed_paths or []) + [AGENT_WORKSPACE_DIR, os.getcwd()]
         
-        # Fallback to default AGENT_WORKSPACE_DIR
-        workspace_path = os.path.abspath(AGENT_WORKSPACE_DIR)
-        workspace_norm = norm_case(workspace_path)
-        if abs_path_norm == workspace_norm:
-            return True
-        prefix = workspace_norm if workspace_norm.endswith(os.sep) else workspace_norm + os.sep
-        return abs_path_norm.startswith(prefix)
+        for allowed in all_allowed:
+            if not allowed:
+                continue
+            allowed_abs = os.path.abspath(allowed)
+            allowed_norm = norm_case(allowed_abs)
+            if abs_path_norm == allowed_norm:
+                return True
+            prefix = allowed_norm if allowed_norm.endswith(os.sep) else allowed_norm + os.sep
+            if abs_path_norm.startswith(prefix):
+                return True
+        return False
     except Exception:
         return False
 
@@ -103,8 +110,32 @@ def is_allowed_extension(filename: str) -> bool:
     return ext in ALLOWED_EXTENSIONS or ext == ''
 
 # Model configurations
-DEFAULT_MAIN_MODEL = "qwen3.5:9b"
-DEFAULT_CODE_MODEL = "qwen3.5:9b"
+DEFAULT_MAIN_MODEL = "granite4.1:8b"
+DEFAULT_CODE_MODEL = "granite4.1:8b"
+
+# Agent Mode configuration
+AGENT_MODE_MODEL = "granite4.1:8b"
+OLLAMA_KEEP_ALIVE = "1h"
+CLAUDE_CODE_MAX_TURNS = 10
+CLAUDE_CODE_TIMEOUT = 120  # seconds
+CLAUDE_CODE_ALLOWED_TOOLS = ["Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "LS", "Bash"]
+CLAUDE_CODE_DISALLOWED_TOOLS = []  # User-configurable blocklist
+
+def get_current_main_model() -> str:
+    try:
+        from .config_store import load_config
+        config = load_config()
+        return config.get("default_main_model", DEFAULT_MAIN_MODEL)
+    except Exception:
+        return DEFAULT_MAIN_MODEL
+
+def get_current_code_model() -> str:
+    try:
+        from .config_store import load_config
+        config = load_config()
+        return config.get("default_code_model", DEFAULT_CODE_MODEL)
+    except Exception:
+        return DEFAULT_CODE_MODEL
 
 # Made with Bob
 

@@ -1,8 +1,16 @@
+import sys
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+if hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
+import os
 import time
 import json
 import asyncio
 from typing import List, Optional, Dict, Any
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import httpx
@@ -57,7 +65,7 @@ class Agent(BaseModel):
     persona: str
     system_prompt: str
     tools: List[str] = []
-    base_model: str = "qwen3.5:9b"
+    base_model: str = "granite4.1:8b"
     training_data: List[Dict[str, str]] = []
 
 class AgentPerformance(BaseModel):
@@ -349,6 +357,19 @@ multi_agent_router = create_multi_agent_router(
 )
 app.include_router(multi_agent_router, prefix="/api/multi-agent")
 
+# Mount static route for browser screenshots and generated documents
+from agents.config import SCREENSHOTS_DIR, DOCUMENTS_DIR
+os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
+os.makedirs(DOCUMENTS_DIR, exist_ok=True)
+app.mount("/api/screenshots", StaticFiles(directory=SCREENSHOTS_DIR), name="screenshots")
+app.mount("/api/documents", StaticFiles(directory=DOCUMENTS_DIR), name="documents")
+
+# Mount built frontend static files if present (for single container deployment)
+frontend_dist = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend", "dist"))
+if os.path.exists(frontend_dist):
+    app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000, timeout_keep_alive=300, timeout_graceful_shutdown=30)
+

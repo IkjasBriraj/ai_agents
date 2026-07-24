@@ -10,12 +10,15 @@ CONFIG_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "age
 
 DEFAULT_CONFIG = {
     "agent_tools": {
-        "code": ["execute_code", "generate_code", "file_operation", "create_project", "analyze_code", "execute_terminal", "schedule_task"],
+        "code": ["execute_code", "generate_code", "file_operation", "create_project", "analyze_code", "execute_terminal", "schedule_task", "verify_app_browser_console", "browser_open_url", "browser_get_console_errors", "browser_take_screenshot", "browser_vision_audit"],
         "research": ["web_search", "summarize_text"],
-        "analysis": ["analyze_code", "file_operation"]
+        "analysis": ["analyze_code", "file_operation", "verify_app_browser_console", "browser_open_url", "browser_get_console_errors", "browser_take_screenshot", "browser_vision_audit"],
+        "business": ["generate_presentation", "generate_excel_sheet", "read_excel_sheet", "csv_sheet_operation", "file_operation"]
     },
     "allowed_paths": [],
-    "allowed_commands": []
+    "allowed_commands": [],
+    "default_main_model": "gemma4:26b",
+    "default_code_model": "gemma4:26b"
 }
 
 _current_config = None
@@ -39,7 +42,9 @@ def load_config() -> dict:
                         **config.get("agent_tools", {})
                     },
                     "allowed_paths": config.get("allowed_paths", []),
-                    "allowed_commands": config.get("allowed_commands", [])
+                    "allowed_commands": config.get("allowed_commands", []),
+                    "default_main_model": config.get("default_main_model", DEFAULT_CONFIG["default_main_model"]),
+                    "default_code_model": config.get("default_code_model", DEFAULT_CONFIG["default_code_model"])
                 }
                 _current_config = merged
                 return _current_config
@@ -49,7 +54,9 @@ def load_config() -> dict:
     _current_config = {
         "agent_tools": {k: list(v) for k, v in DEFAULT_CONFIG["agent_tools"].items()},
         "allowed_paths": list(DEFAULT_CONFIG["allowed_paths"]),
-        "allowed_commands": list(DEFAULT_CONFIG["allowed_commands"])
+        "allowed_commands": list(DEFAULT_CONFIG["allowed_commands"]),
+        "default_main_model": DEFAULT_CONFIG["default_main_model"],
+        "default_code_model": DEFAULT_CONFIG["default_code_model"]
     }
     return _current_config
 
@@ -76,7 +83,9 @@ def save_config(config: dict) -> None:
     updated_config = {
         "agent_tools": config.get("agent_tools", DEFAULT_CONFIG["agent_tools"]),
         "allowed_paths": allowed_paths,
-        "allowed_commands": allowed_commands
+        "allowed_commands": allowed_commands,
+        "default_main_model": config.get("default_main_model", DEFAULT_CONFIG["default_main_model"]),
+        "default_code_model": config.get("default_code_model", DEFAULT_CONFIG["default_code_model"])
     }
     
     _current_config = updated_config

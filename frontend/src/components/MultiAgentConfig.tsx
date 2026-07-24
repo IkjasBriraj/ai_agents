@@ -27,6 +27,8 @@ interface AgentTools {
 interface MultiAgentConfigState {
   agent_tools: AgentTools;
   allowed_paths: string[];
+  default_main_model: string;
+  default_code_model: string;
 }
 
 export const MultiAgentConfig: React.FC = () => {
@@ -36,7 +38,9 @@ export const MultiAgentConfig: React.FC = () => {
       research: [],
       analysis: []
     },
-    allowed_paths: []
+    allowed_paths: [],
+    default_main_model: 'granite4.1:8b',
+    default_code_model: 'granite4.1:8b'
   });
   
   const [allTools, setAllTools] = useState<AgentTools>({
@@ -45,6 +49,7 @@ export const MultiAgentConfig: React.FC = () => {
     analysis: ["analyze_code", "file_operation"]
   });
 
+  const [localModels, setLocalModels] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [newPath, setNewPath] = useState('');
@@ -54,12 +59,29 @@ export const MultiAgentConfig: React.FC = () => {
   const fetchConfig = async () => {
     setLoading(true);
     try {
-      const response = await OllamaService.getMultiAgentConfig();
-      if (response && response.status === 'success') {
-        setConfig(response.config);
-        if (response.all_tools) {
-          setAllTools(response.all_tools);
+      const [configResponse, localModelsResponse] = await Promise.all([
+        OllamaService.getMultiAgentConfig(),
+        OllamaService.getLocalModels().catch(err => {
+          console.error("Failed to load local models list", err);
+          return { status: 'error', models: [] };
+        })
+      ]);
+      
+      if (configResponse && configResponse.status === 'success') {
+        // Ensure default models exist in the response config
+        const fetchedConfig = {
+          ...configResponse.config,
+          default_main_model: configResponse.config.default_main_model || 'granite4.1:8b',
+          default_code_model: configResponse.config.default_code_model || 'granite4.1:8b'
+        };
+        setConfig(fetchedConfig);
+        if (configResponse.all_tools) {
+          setAllTools(configResponse.all_tools);
         }
+      }
+      
+      if (localModelsResponse && localModelsResponse.status === 'success') {
+        setLocalModels(localModelsResponse.models || []);
       }
     } catch (err) {
       console.error("Failed to load multi-agent configuration", err);
@@ -336,8 +358,90 @@ export const MultiAgentConfig: React.FC = () => {
           </Card>
         </div>
 
-        {/* Right Column: Whitelisted File Access Controller */}
+        {/* Right Column: Whitelisted File Access Controller & Models */}
         <div className="lg:col-span-2 space-y-6">
+          <Card className="carbon-card">
+            <CardHeader className="pb-4 border-b border-border/30">
+              <CardTitle className="text-base font-semibold tracking-wider font-mono text-muted-foreground uppercase flex items-center gap-2.5">
+                <Settings className="w-5 h-5 text-ibm-blue" />
+                Ollama Model Configuration
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="pt-6 space-y-4">
+              <p className="text-xs text-muted-foreground font-light leading-relaxed">
+                Specify the Ollama models to run locally. If a model is not downloaded, it will be automatically pulled in the background when you save.
+              </p>
+              
+              {/* Main Model field */}
+              <div className="space-y-1.5">
+                <label className="text-[11px] font-mono text-muted-foreground uppercase block font-bold">
+                  Orchestrator & General Model
+                </label>
+                <input
+                  type="text"
+                  value={config.default_main_model || ''}
+                  onChange={(e) => setConfig(prev => ({ ...prev, default_main_model: e.target.value }))}
+                  placeholder="e.g. granite4.1:8b"
+                  className="w-full bg-background text-foreground border border-border px-3 py-2 text-sm font-mono focus:outline-none focus:border-ibm-blue transition-colors"
+                />
+              </div>
+
+              {/* Code Specialist Model field */}
+              <div className="space-y-1.5">
+                <label className="text-[11px] font-mono text-muted-foreground uppercase block font-bold">
+                  Code Specialist Model
+                </label>
+                <input
+                  type="text"
+                  value={config.default_code_model || ''}
+                  onChange={(e) => setConfig(prev => ({ ...prev, default_code_model: e.target.value }))}
+                  placeholder="e.g. granite4.1:8b"
+                  className="w-full bg-background text-foreground border border-border px-3 py-2 text-sm font-mono focus:outline-none focus:border-ibm-blue transition-colors"
+                />
+              </div>
+
+              {/* Suggested Local Models list */}
+              {localModels.length > 0 && (
+                <div className="space-y-2 pt-2">
+                  <label className="text-[10px] font-mono text-muted-foreground uppercase block font-bold">
+                    Assign Local Models:
+                  </label>
+                  <div className="flex flex-col gap-1.5 max-h-32 overflow-y-auto pr-1">
+                    {localModels.map((m: any) => {
+                      const isMainSelected = config.default_main_model === m.name;
+                      const isCodeSelected = config.default_code_model === m.name;
+                      return (
+                        <div key={m.name} className="flex items-center justify-between bg-muted/40 p-1 border text-[10px] font-mono">
+                          <span className="truncate max-w-[120px] px-1 text-muted-foreground" title={m.name}>{m.name}</span>
+                          <div className="flex gap-1">
+                            <button
+                              onClick={() => setConfig(prev => ({ ...prev, default_main_model: m.name }))}
+                              className={cn(
+                                "px-1.5 py-0.5 border text-[9px] uppercase transition-colors font-bold",
+                                isMainSelected ? "bg-ibm-blue text-white border-ibm-blue" : "bg-card border-border hover:bg-muted text-foreground"
+                              )}
+                            >
+                              Main
+                            </button>
+                            <button
+                              onClick={() => setConfig(prev => ({ ...prev, default_code_model: m.name }))}
+                              className={cn(
+                                "px-1.5 py-0.5 border text-[9px] uppercase transition-colors font-bold",
+                                isCodeSelected ? "bg-ibm-blue text-white border-ibm-blue" : "bg-card border-border hover:bg-muted text-foreground"
+                              )}
+                            >
+                              Code
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
           <Card className="carbon-card">
             <CardHeader className="pb-4 border-b border-border/30">
               <CardTitle className="text-base font-semibold tracking-wider font-mono text-muted-foreground uppercase flex items-center gap-2.5">

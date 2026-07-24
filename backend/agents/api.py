@@ -1,9 +1,11 @@
 import asyncio
+import io
 from typing import Optional, Dict, Any, List
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, File, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 import json
+import speech_recognition as sr
 
 from database.db import get_db
 from database.models import HubModel, AgentModel, McpServerModel, WorkflowModel, ChatMessageModel, PerformanceLogModel, ScheduledTaskModel
@@ -88,6 +90,14 @@ class CommandPermissionResponseRequest(BaseModel):
     granted: bool = Field(..., description="Decision made: true to grant, false to deny")
 
 
+class PlanApprovalResponseRequest(BaseModel):
+    """Request model for user plan approval decisions"""
+    session_id: str = Field(default="default", description="Session ID of the request")
+    plan_path: str = Field(..., description="Absolute or relative path to the plan file")
+    plan_content: str = Field(..., description="Plan content (edited or original)")
+    approved: bool = Field(..., description="Whether the plan was approved")
+
+
 class ScheduledTaskSchema(BaseModel):
     """Schema for scheduled/looped tasks"""
     id: Optional[str] = None
@@ -128,7 +138,33 @@ def create_multi_agent_router(
                 "count": len(agents)
             }
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             raise HTTPException(status_code=500, detail=str(e))
+    
+    @router.post("/agents/voice/transcribe")
+    async def transcribe_voice(file: UploadFile = File(...)):
+        """Transcribe uploaded audio file to text using SpeechRecognition"""
+        try:
+            audio_bytes = await file.read()
+            if not audio_bytes:
+                return {"status": "error", "message": "Audio file is empty"}
+
+            def _transcribe():
+                recognizer = sr.Recognizer()
+                with sr.AudioFile(io.BytesIO(audio_bytes)) as source:
+                    audio_data = recognizer.record(source)
+                return recognizer.recognize_google(audio_data)
+
+            transcribed_text = await asyncio.to_thread(_transcribe)
+            return {"status": "success", "text": transcribed_text}
+        except sr.UnknownValueError:
+            return {"status": "error", "message": "Speech unintelligible: Could not understand audio"}
+        except sr.RequestError as e:
+            return {"status": "error", "message": f"Speech recognition service unavailable: {str(e)}"}
+        except Exception as e:
+            return {"status": "error", "message": f"Voice transcription failed: {str(e)}"}
+
     
     @router.post("/agents/chat", response_model=AgentResponse)
     async def multi_agent_chat(request: MultiAgentRequest):
@@ -273,6 +309,21 @@ def create_multi_agent_router(
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
     
+    @router.post("/agents/analysis/vision-ui")
+    async def analyze_ui_vision(filepath: str):
+        """
+        Analyze a UI screenshot or HTML file using Gemma-4-26B Vision Capabilities
+        """
+        try:
+            analysis_agent = create_specialized_agent("analysis", model_name, ollama_base_url)
+            if not analysis_agent:
+                raise HTTPException(status_code=500, detail="Failed to create analysis agent")
+            
+            result = await asyncio.to_thread(analysis_agent.analyze_ui_with_vision, filepath)
+            return result
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
     @router.get("/agents/health")
     async def health_check():
         """Health check for multi-agent system"""
@@ -303,6 +354,16 @@ def create_multi_agent_router(
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
             
+    @router.post("/agents/stop")
+    async def stop_multi_agent_execution(session_id: Optional[str] = "default"):
+        """Explicitly cancel and stop agent execution for a session"""
+        try:
+            from .permissions import cancel_session
+            cancel_session(session_id or "default")
+            return {"status": "success", "message": "Cancellation request registered"}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+            
     @router.get("/config")
     async def get_multi_agent_config():
         """Get the current multi-agent configuration"""
@@ -323,6 +384,42 @@ def create_multi_agent_router(
         try:
             from .config_store import save_config
             save_config(config)
+            
+            # Asynchronously check and pull dynamic models if not installed
+            main_model = config.get("default_main_model")
+            code_model = config.get("default_code_model")
+            
+            import httpx
+            import asyncio
+            
+            async def check_and_pull(model_name: str):
+                if not model_name:
+                    return
+                try:
+                    async with httpx.AsyncClient(timeout=10.0) as client:
+                        response = await client.get(f"{ollama_base_url}/api/tags")
+                        if response.status_code == 200:
+                            models = response.json().get("models", [])
+                            local_names = [m["name"] for m in models]
+                            # check standard name and name:latest
+                            if model_name not in local_names and f"{model_name}:latest" not in local_names:
+                                print(f"Model '{model_name}' is not installed locally. Starting background pull...")
+                                async def perform_pull():
+                                    async with httpx.AsyncClient(timeout=600.0) as pull_client:
+                                        try:
+                                            await pull_client.post(f"{ollama_base_url}/api/pull", json={"name": model_name})
+                                            print(f"Background pull completed for model: {model_name}")
+                                        except Exception as pe:
+                                            print(f"Failed background pull for model {model_name}: {pe}")
+                                asyncio.create_task(perform_pull())
+                except Exception as e:
+                    print(f"Error checking/pulling model: {e}")
+            
+            if main_model:
+                asyncio.create_task(check_and_pull(main_model))
+            if code_model and code_model != main_model:
+                asyncio.create_task(check_and_pull(code_model))
+
             return {
                 "status": "success",
                 "message": "Configuration updated successfully",
@@ -378,6 +475,24 @@ def create_multi_agent_router(
                 "resolved": success,
                 "command": request.command,
                 "granted": request.granted
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.post("/permission/plan/respond")
+    async def respond_to_plan_permission(request: PlanApprovalResponseRequest):
+        """Respond to a pending plan approval request"""
+        try:
+            from .permissions import resolve_plan
+            
+            # Resolve plan (triggers the wait event in the blocking thread)
+            success = resolve_plan(request.session_id, request.plan_path, request.plan_content, request.approved)
+            
+            return {
+                "status": "success",
+                "resolved": success,
+                "plan_path": request.plan_path,
+                "approved": request.approved
             }
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
@@ -946,7 +1061,111 @@ def create_multi_agent_router(
         task.status = "active"
         await db.commit()
         return {"status": "success", "message": f"Task {task_id} queued for immediate execution"}
-    
+    # ====== Agent Mode Endpoints ======
+
+    class AgentModeChatRequest(BaseModel):
+        prompt: str
+        cwd: str
+        file_path: Optional[str] = None
+        file_content: Optional[str] = None
+        session_id: str = "default"
+
+    class AgentModeQuickActionRequest(BaseModel):
+        action: str  # explain, find_bugs, refactor, add_tests, document, fix_errors, optimize, find_related
+        file_path: str
+        file_content: str
+        cwd: str
+        session_id: str = "default"
+
+    @router.get("/agent-mode/status")
+    async def agent_mode_status():
+        """Check Agent Mode availability"""
+        from .claude_code_service import get_claude_code_service
+        from .agent_mode import get_agent_mode_orchestrator
+        from .config import get_current_main_model
+        
+        service = get_claude_code_service()
+        claude_available = await service.is_available()
+        model_name = get_current_main_model()
+        return {
+            "status": "ready",
+            "claude_code_available": claude_available,
+            "ollama_model": model_name,
+            "mode": "hybrid" if claude_available else "ollama_only"
+        }
+
+    @router.post("/agent-mode/chat")
+    async def agent_mode_chat(request: AgentModeChatRequest):
+        """Stream an agent mode chat response"""
+        from .agent_mode import get_agent_mode_orchestrator
+        from .config import get_current_main_model
+        model_name = get_current_main_model()
+        
+        # We need ollama_base_url, use default if not in config
+        ollama_base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+        orchestrator = get_agent_mode_orchestrator(model_name=model_name, ollama_base_url=ollama_base_url)
+        
+        async def generate_sse():
+            try:
+                async for event in orchestrator.process_chat(
+                    prompt=request.prompt,
+                    cwd=request.cwd,
+                    file_path=request.file_path,
+                    file_content=request.file_content,
+                    session_id=request.session_id
+                ):
+                    yield f"data: {json.dumps(event)}\n\n"
+            except Exception as e:
+                yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+        
+        return StreamingResponse(generate_sse(), media_type="text/event-stream")
+
+    @router.post("/agent-mode/quick-action")
+    async def agent_mode_quick_action(request: AgentModeQuickActionRequest):
+        """Execute a quick action on a file"""
+        from .agent_mode import get_agent_mode_orchestrator
+        from .config import get_current_main_model
+        model_name = get_current_main_model()
+        
+        ollama_base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+        orchestrator = get_agent_mode_orchestrator(model_name=model_name, ollama_base_url=ollama_base_url)
+        
+        async def generate_sse():
+            try:
+                async for event in orchestrator.quick_action(
+                    action=request.action,
+                    file_path=request.file_path,
+                    file_content=request.file_content,
+                    cwd=request.cwd,
+                    session_id=request.session_id
+                ):
+                    yield f"data: {json.dumps(event)}\n\n"
+            except Exception as e:
+                yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+        
+        return StreamingResponse(generate_sse(), media_type="text/event-stream")
+
+    @router.get("/agent-mode/history")
+    async def agent_mode_history(session_id: str = "default"):
+        from .agent_mode import get_agent_mode_orchestrator
+        from .config import get_current_main_model
+        model_name = get_current_main_model()
+        
+        ollama_base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+        orchestrator = get_agent_mode_orchestrator(model_name=model_name, ollama_base_url=ollama_base_url)
+        return {"history": orchestrator.get_history(session_id)}
+
+    @router.delete("/agent-mode/history")
+    async def agent_mode_clear_history(session_id: str = "default"):
+        from .agent_mode import get_agent_mode_orchestrator
+        from .config import get_current_main_model
+        model_name = get_current_main_model()
+        
+        ollama_base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+        orchestrator = get_agent_mode_orchestrator(model_name=model_name, ollama_base_url=ollama_base_url)
+        orchestrator.clear_history(session_id)
+        return {"status": "cleared"}
+
     return router
 
 # Made with Bob

@@ -15,7 +15,7 @@ class AIGuideConfig:
     model_provider: str = "ollama"
     """LLM provider (ollama, openai, anthropic, azure, etc.)"""
     
-    model_name: str = "qwen3.5:9b"
+    model_name: str = "granite4.1:8b"
     """Model name to use"""
     
     api_base: Optional[str] = "http://localhost:11434"
@@ -91,6 +91,7 @@ Keep your responses professional, helpful, and concise. Use Markdown for formatt
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
             "stream": True,
+            "request_timeout": 600.0,
         }
         
         if self.api_base:

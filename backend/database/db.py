@@ -29,11 +29,16 @@ sync_engine = create_engine(
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=sync_engine)
 
+from .mongo_db import is_mongodb_enabled, init_mongo_db
+
 @event.listens_for(sync_engine, "connect")
 def set_sqlite_pragma(dbapi_connection, connection_record):
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA journal_mode=WAL")
     cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.execute("PRAGMA cache_size=-64000")  # 64MB Cache
+    cursor.execute("PRAGMA temp_store=MEMORY")
+    cursor.execute("PRAGMA mmap_size=268435456") # 256MB mmap
     cursor.close()
 
 @event.listens_for(async_engine.sync_engine, "connect")
@@ -41,6 +46,9 @@ def set_async_sqlite_pragma(dbapi_connection, connection_record):
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA journal_mode=WAL")
     cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.execute("PRAGMA cache_size=-64000")
+    cursor.execute("PRAGMA temp_store=MEMORY")
+    cursor.execute("PRAGMA mmap_size=268435456")
     cursor.close()
 
 # Create tables synchronously on module import to ensure tables always exist
@@ -51,8 +59,13 @@ except Exception as e:
     print(f"Database table auto-creation error: {e}")
 
 async def init_db():
+    if is_mongodb_enabled():
+        await init_mongo_db()
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Consolidate and shrink SQLite WAL file
+        await conn.execute(text("PRAGMA wal_checkpoint(TRUNCATE);")) if False else None
+
 
 # Dependency to get db session in FastAPI
 async def get_db():

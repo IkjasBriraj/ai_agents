@@ -52,6 +52,11 @@ def test_orchestrator():
                 "expected_agent": "analysis"
             },
             {
+                "name": "Business Strategy & Spreadsheet Request",
+                "prompt": "Create a 2026 financial forecast spreadsheet in CSV",
+                "expected_agent": "business"
+            },
+            {
                 "name": "General Request",
                 "prompt": "Hello, how are you?",
                 "expected_agent": "general"
@@ -181,6 +186,96 @@ def calculate_sum(numbers):
         return False
 
 
+def test_business_agent():
+    """Test the Business Agent directly"""
+    print_section("Testing Business Agent")
+    
+    try:
+        agent = create_specialized_agent("business")
+        if not agent:
+            print("✗ Failed to create Business Agent")
+            return False
+        
+        print("✓ Business Agent created successfully")
+        print(f"  Name: {agent.name}")
+        print(f"  Type: {agent.agent_type}")
+        print(f"  Tools: {[tool.name for tool in agent.tools]}")
+        
+        # Test business plan method
+        print("\nTesting business plan generation struct...")
+        bp_result = agent.generate_business_plan("SaaS subscription startup model")
+        print(f"✓ Status: {bp_result['status']}")
+        print(f"✓ Type: {bp_result['type']}")
+        
+        # Test financial model method
+        print("\nTesting financial model generation struct...")
+        fm_result = agent.create_financial_model("Monthly revenue forecast for Q1-Q4")
+        print(f"✓ Status: {fm_result['status']}")
+        print(f"✓ Type: {fm_result['type']}")
+        
+        return True
+        
+    except Exception as e:
+        print(f"✗ Error testing Business Agent: {e}")
+        return False
+
+
+def test_csv_sheet_operation():
+    """Test the csv_sheet_operation tool directly"""
+    print_section("Testing CSV Sheet Operation Tool")
+    
+    try:
+        from agents.tools import csv_sheet_operation
+        import os
+        
+        test_path = "test_financials.csv"
+        
+        # Test write
+        print("Testing CSV write operation...")
+        header_and_data = [
+            ["Quarter", "Revenue", "Expenses", "Profit"],
+            ["Q1", "10000", "6000", "4000"],
+            ["Q2", "15000", "7500", "7500"],
+        ]
+        write_res = csv_sheet_operation("write", test_path, header_and_data)
+        print(f"✓ Write Result: {write_res}")
+        if "[SUCCESS]" not in write_res:
+            print("✗ CSV write failed")
+            return False
+            
+        # Test append
+        print("\nTesting CSV append operation...")
+        append_data = [
+            ["Q3", "20000", "9000", "11000"]
+        ]
+        append_res = csv_sheet_operation("append", test_path, append_data)
+        print(f"✓ Append Result: {append_res}")
+        if "[SUCCESS]" not in append_res:
+            print("✗ CSV append failed")
+            return False
+
+        # Test read
+        print("\nTesting CSV read operation...")
+        read_res = csv_sheet_operation("read", test_path)
+        print(f"✓ Read Result:\n{read_res}")
+        if "test_financials.csv" not in read_res or "Quarter" not in read_res:
+            print("✗ CSV read failed")
+            return False
+            
+        # Clean up test file
+        from agents.config import get_workspace_path
+        abs_path = get_workspace_path(test_path)
+        if os.path.exists(abs_path):
+            os.remove(abs_path)
+            print("✓ Cleaned up temporary test CSV file")
+
+        return True
+
+    except Exception as e:
+        print(f"✗ Error testing CSV Sheet Operation tool: {e}")
+        return False
+
+
 def test_available_agents():
     """Test getting available agents"""
     print_section("Testing Available Agents")
@@ -202,6 +297,10 @@ def test_available_agents():
         return False
 
 
+import pytest
+
+
+@pytest.mark.asyncio
 async def test_streaming():
     """Test streaming response"""
     print_section("Testing Streaming Response")
@@ -242,6 +341,8 @@ def main():
         "Code Agent": test_code_agent(),
         "Research Agent": test_research_agent(),
         "Analysis Agent": test_analysis_agent(),
+        "Business Agent": test_business_agent(),
+        "CSV Sheet Tool": test_csv_sheet_operation(),
         "Orchestrator": test_orchestrator(),
     }
     

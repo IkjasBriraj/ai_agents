@@ -3,12 +3,13 @@ Agent Tools Module
 Specialized tools for different agent types
 """
 
-from typing import List, Dict, Any, Callable
+from typing import List, Dict, Any, Callable, Optional
 from langchain_core.tools import tool, StructuredTool
 from pydantic import BaseModel, Field
 import subprocess
 import os
 import json
+import csv
 from .config import (
     AGENT_WORKSPACE_DIR,
     is_safe_path,
@@ -58,9 +59,9 @@ class CodeExecutionInput(BaseModel):
 
 class FileOperationInput(BaseModel):
     """Input for file operations"""
-    operation: str = Field(description="Operation: read, write, list")
+    operation: str = Field(description="Operation: read, write, list, patch")
     path: str = Field(description="File or directory path")
-    content: str = Field(default="", description="Content for write operation")
+    content: Any = Field(default="", description="Content for write or patch operation (for patch, JSON string/dict with 'target' and 'replacement')")
 
 
 class WebSearchInput(BaseModel):
@@ -212,9 +213,9 @@ def robust_parse_json_fields(s: str) -> Dict[str, Any]:
     for k in ["content", "code"]:
         if k in result and isinstance(result[k], str):
             c = result[k]
-            if '\\n' in c or '\\t' in c or '\\"' in c:
+            if '\\' in c:
                 try:
-                    decoded = bytes(c, "utf-8").decode("unicode_escape")
+                    decoded = c.encode('utf-8').decode('unicode_escape').encode('latin-1').decode('utf-8')
                     result[k] = decoded
                 except Exception:
                     pass
@@ -266,9 +267,9 @@ def safe_parse_input(x: Any) -> Dict[str, Any]:
     for k in ["content", "code"]:
         if k in result and isinstance(result[k], str):
             c = result[k]
-            if '\\n' in c or '\\t' in c or '\\"' in c:
+            if '\\' in c:
                 try:
-                    decoded = bytes(c, "utf-8").decode("unicode_escape")
+                    decoded = c.encode('utf-8').decode('unicode_escape').encode('latin-1').decode('utf-8')
                     result[k] = decoded
                 except Exception:
                     pass
@@ -397,6 +398,21 @@ def write_file_content(path: str, content: str) -> str:
         if not is_allowed_extension(path):
             return f"Error: File extension not allowed. File: {path}"
         
+        # Syntax validation
+        ext = os.path.splitext(path)[1].lower()
+        if ext == '.py':
+            try:
+                import ast
+                ast.parse(content)
+            except SyntaxError as e:
+                return f"Error: Syntax validation failed for Python file: {e}"
+        elif ext == '.json':
+            try:
+                import json
+                json.loads(content)
+            except json.JSONDecodeError as e:
+                return f"Error: Syntax validation failed for JSON file: {e}"
+        
         # Create directory if it doesn't exist
         dir_path = os.path.dirname(path)
         if dir_path:
@@ -411,6 +427,93 @@ def write_file_content(path: str, content: str) -> str:
         return f"[SUCCESS] Created: {rel_path}\n  Full path: {abs_path}\n  Size: {len(content)} bytes"
     except Exception as e:
         return f"Error writing file: {str(e)}"
+
+
+def patch_file_content(path: str, content: Any) -> str:
+    """Patch file content by replacing target string with replacement string in workspace"""
+    try:
+        print("Patch file content: ", path)
+        if not os.path.isabs(path) or path.startswith('/') or path.startswith('\\'):
+            rel_path = path.lstrip('/\\')
+            path = get_workspace_path(rel_path)
+        
+        # Security check
+        if not check_and_request_permission(path):
+            return f"Error: Access denied. Path must be whitelisted: {path}"
+        
+        # Check file extension
+        if not is_allowed_extension(path):
+            return f"Error: File extension not allowed. File: {path}"
+        
+        if not os.path.exists(path):
+            return f"Error: File not found: {path}"
+
+        # Parse content payload (JSON string or dict)
+        if isinstance(content, dict):
+            payload = content
+        elif isinstance(content, str):
+            try:
+                payload = json.loads(content, strict=False)
+            except Exception:
+                try:
+                    extracted = extract_first_json(content)
+                    payload = json.loads(extracted, strict=False)
+                except Exception as e:
+                    return f"Error: Invalid JSON payload for patch operation: {str(e)}"
+        else:
+            return "Error: Content for patch operation must be a JSON string or dict with 'target' and 'replacement' keys."
+
+        if not isinstance(payload, dict) or "target" not in payload or "replacement" not in payload:
+            return "Error: Patch content must be a JSON object containing 'target' and 'replacement' fields."
+
+        target = payload["target"]
+        replacement = payload["replacement"]
+
+        if not target:
+            return "Error: Target string cannot be empty."
+
+        # Read existing file content
+        with open(path, 'r', encoding='utf-8') as f:
+            existing_content = f.read()
+
+        if target not in existing_content:
+            lines = existing_content.splitlines()
+            target_first_line = target.splitlines()[0] if target.splitlines() else target
+            matching_lines = [i + 1 for i, line in enumerate(lines) if target_first_line.strip() in line]
+            return (
+                f"Error: Target string not found in file: {path}.\n"
+                f"Target string preview: {repr(target[:100])}\n"
+                f"File context: Total lines={len(lines)}, Total bytes={len(existing_content)}.\n"
+                f"Search details for target start line ({repr(target_first_line[:50])}): "
+                f"Found at lines {matching_lines if matching_lines else 'None'}."
+            )
+
+        # Replace ONLY the first occurrence
+        new_content = existing_content.replace(target, replacement, 1)
+
+        # Syntax validation
+        ext = os.path.splitext(path)[1].lower()
+        if ext == '.py':
+            try:
+                import ast
+                ast.parse(new_content)
+            except SyntaxError as e:
+                return f"Error: Syntax validation failed for Python file: {e}"
+        elif ext == '.json':
+            try:
+                json.loads(new_content)
+            except json.JSONDecodeError as e:
+                return f"Error: Syntax validation failed for JSON file: {e}"
+
+        # Write patched content back to file
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(new_content)
+
+        rel_path = os.path.relpath(path, AGENT_WORKSPACE_DIR)
+        abs_path = os.path.abspath(path)
+        return f"[SUCCESS] Patched: {rel_path}\n  Full path: {abs_path}\n  Size: {len(new_content)} bytes"
+    except Exception as e:
+        return f"Error patching file: {str(e)}"
 
 
 def list_directory(path: str = "") -> str:
@@ -485,7 +588,7 @@ def create_project_structure(structure: Dict[str, str]) -> str:
         return f"Error creating project structure: {str(e)}"
 
 
-def file_operation(operation: str, path: str, content: str = "") -> str:
+def file_operation(operation: str, path: str, content: Any = "") -> str:
     """Perform file operations in workspace"""
     if operation == "read":
         return read_file_content(path)
@@ -493,8 +596,10 @@ def file_operation(operation: str, path: str, content: str = "") -> str:
         return write_file_content(path, content)
     elif operation == "list":
         return list_directory(path)
+    elif operation == "patch":
+        return patch_file_content(path, content)
     else:
-        return f"Error: Unknown operation: {operation}. Use 'read', 'write', or 'list'"
+        return f"Error: Unknown operation: {operation}. Use 'read', 'write', 'list', or 'patch'"
 
 
 # Research Agent Tools
@@ -620,66 +725,74 @@ def analyze_code(code: str) -> str:
 
 def execute_terminal_command(command: str, cwd: str = "") -> str:
     """Execute a terminal/shell command with interactive permission approval.
-    For scheduled tasks (unrestricted context), commands run without permission.
-    For interactive sessions, the user is asked to approve the command."""
+    Supports non-blocking background execution for servers (e.g., npm run dev, vite, python main.py)."""
     try:
-        import shlex
+        import time
+        import queue as py_queue
+        import threading
+
         print(f"Execute terminal command: {command} in {cwd}")
-        
+
         # Determine working directory
         if not cwd or not os.path.isabs(cwd):
             cwd = AGENT_WORKSPACE_DIR
-        
+
         abs_cwd = os.path.abspath(cwd)
-        
+
         # Check if we are in a scheduled (unrestricted) context
         from .session_context import current_agent_context
         ctx = current_agent_context.get()
         is_unrestricted = False
-        
+
         if ctx and ctx.get("unrestricted"):
             is_unrestricted = True
-        
+
         if not is_unrestricted:
             # Check path permission for the cwd
             if not check_and_request_permission(abs_cwd):
                 return f"Error: Access denied for working directory: {abs_cwd}"
-            
+
             # Check command permission - always ask user interactively
             from .config_store import get_allowed_commands, add_allowed_command
             allowed = get_allowed_commands()
-            
+
             # Check if command is already whitelisted
             cmd_base = command.strip().split()[0] if command.strip() else ""
             is_allowed = command in allowed or cmd_base in allowed
-            
+
             if not is_allowed:
                 # Request interactive permission
                 if ctx and "queue" in ctx and "loop" in ctx:
                     session_id = ctx.get("session_id", "default")
                     queue = ctx["queue"]
                     loop = ctx["loop"]
-                    
+
                     from .permissions import register_and_wait_for_command_permission
                     granted = register_and_wait_for_command_permission(
                         session_id, command, abs_cwd, queue, loop
                     )
-                    
+
                     if not granted:
                         return f"Error: User denied permission to execute command: {command}"
-                    
+
                     # Add to allowed commands for this session
                     add_allowed_command(command)
                 else:
                     return f"Error: Command '{command}' is not whitelisted and no interactive session available for approval."
-        
+
         # Stream terminal output if interactive queue is available
         queue = None
         loop = None
         if ctx and "queue" in ctx and "loop" in ctx:
             queue = ctx["queue"]
             loop = ctx["loop"]
-        
+
+        cmd_lower = command.lower()
+        is_server_cmd = any(kw in cmd_lower for kw in [
+            "run dev", "npm start", "vite", "python main.py", "uvicorn", 
+            "flask run", "http-server", "serve", "node server", "python -m http.server", "python app.py"
+        ]) or command.strip().endswith("&")
+
         # Execute the command
         process = subprocess.Popen(
             command,
@@ -690,46 +803,116 @@ def execute_terminal_command(command: str, cwd: str = "") -> str:
             text=True,
             bufsize=1
         )
-        
+
+        line_queue = py_queue.Queue()
+
+        def stream_reader(p, q):
+            try:
+                for l in iter(p.stdout.readline, ''):
+                    if l:
+                        q.put(l)
+            except Exception:
+                pass
+            finally:
+                try:
+                    p.stdout.close()
+                except Exception:
+                    pass
+                q.put(None)
+
+        reader_thread = threading.Thread(target=stream_reader, args=(process, line_queue), daemon=True)
+        reader_thread.start()
+
         output_lines = []
-        try:
-            for line in iter(process.stdout.readline, ''):
-                if line:
-                    output_lines.append(line)
-                    # Stream to frontend if available
-                    if queue and loop:
-                        loop.call_soon_threadsafe(
-                            queue.put_nowait,
-                            {
-                                "type": "terminal_output",
-                                "content": line,
-                                "done": False
-                            }
-                        )
-        except Exception:
-            pass
-        
-        process.wait(timeout=120)
-        
-        # Send terminal done event
-        if queue and loop:
-            loop.call_soon_threadsafe(
-                queue.put_nowait,
-                {
-                    "type": "terminal_output",
-                    "content": f"\n[Process exited with code {process.returncode}]",
-                    "done": True
-                }
-            )
-        
+        start_t = time.time()
+        server_detected = False
+
+        server_indicators = [
+            "http://", "https://", "localhost:", "127.0.0.1:", 
+            "listening on", "ready in", "uvicorn running", "compiled successfully", 
+            "press ctrl+c", "server started", "running on", "app running"
+        ]
+
+        max_wait = 15.0 if is_server_cmd else 60.0
+
+        while True:
+            elapsed = time.time() - start_t
+            if elapsed >= max_wait:
+                break
+
+            try:
+                line = line_queue.get(timeout=0.4)
+                if line is None:
+                    break
+
+                output_lines.append(line)
+
+                if queue and loop:
+                    loop.call_soon_threadsafe(
+                        queue.put_nowait,
+                        {
+                            "type": "terminal_output",
+                            "content": line,
+                            "done": False
+                        }
+                    )
+
+                line_lower = line.lower()
+                if any(ind in line_lower for ind in server_indicators):
+                    server_detected = True
+                    time.sleep(1.0)
+                    while not line_queue.empty():
+                        try:
+                            extra = line_queue.get_nowait()
+                            if extra:
+                                output_lines.append(extra)
+                                if queue and loop:
+                                    loop.call_soon_threadsafe(
+                                        queue.put_nowait,
+                                        {"type": "terminal_output", "content": extra, "done": False}
+                                    )
+                        except py_queue.Empty:
+                            break
+                    break
+            except py_queue.Empty:
+                if process.poll() is not None:
+                    break
+                if is_server_cmd and len(output_lines) > 0 and elapsed >= 3.0:
+                    server_detected = True
+                    break
+
+        poll_res = process.poll()
         full_output = "".join(output_lines)
-        if process.returncode == 0:
-            return f"Command executed successfully (exit code 0):\n{full_output}"
+
+        if poll_res is None and (is_server_cmd or server_detected):
+            if queue and loop:
+                loop.call_soon_threadsafe(
+                    queue.put_nowait,
+                    {
+                        "type": "terminal_output",
+                        "content": f"\n[Server started successfully and running in background (PID {process.pid})]",
+                        "done": True
+                    }
+                )
+            return f"Server/Command started successfully and is running in background (PID {process.pid}):\n{full_output}"
+
+        elif poll_res is not None:
+            if queue and loop:
+                loop.call_soon_threadsafe(
+                    queue.put_nowait,
+                    {
+                        "type": "terminal_output",
+                        "content": f"\n[Process exited with code {poll_res}]",
+                        "done": True
+                    }
+                )
+            if poll_res == 0:
+                return f"Command executed successfully (exit code 0):\n{full_output}"
+            else:
+                return f"Command failed (exit code {poll_res}):\n{full_output}"
         else:
-            return f"Command failed (exit code {process.returncode}):\n{full_output}"
-    except subprocess.TimeoutExpired:
-        process.kill()
-        return "Error: Command execution timed out (120s limit)"
+            process.kill()
+            return f"Error: Command execution timed out ({max_wait}s limit):\n{full_output}"
     except Exception as e:
         return f"Error executing terminal command: {str(e)}"
 
@@ -777,9 +960,243 @@ def schedule_agent_task(task_name: str, prompt: str, interval_minutes: int = 0, 
         return f"Error scheduling task: {str(e)}"
 
 
+def verify_app_browser_console(target_dir: str = "") -> str:
+    """Run an automated browser & console verification check on files in the workspace.
+    Checks HTML structure, script links (404 checks), CSS imports, JavaScript syntax/console errors, and Python syntax.
+    Returns a detailed audit report."""
+    import os
+    import re
+    import py_compile
+    import subprocess
+    from html.parser import HTMLParser
+
+    target_path = os.path.abspath(target_dir) if target_dir and os.path.isabs(target_dir) else os.path.join(AGENT_WORKSPACE_DIR, target_dir)
+    if not os.path.exists(target_path):
+        return f"Error: Path '{target_path}' does not exist."
+
+    console_errors = []
+    warnings = []
+    checked_files = []
+
+    all_files = []
+    if os.path.isfile(target_path):
+        all_files.append(target_path)
+    else:
+        for root, _, files in os.walk(target_path):
+            for file in files:
+                if not file.startswith('.') and 'node_modules' not in root and 'venv' not in root:
+                    all_files.append(os.path.join(root, file))
+
+    class HTMLAssetParser(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.scripts = []
+            self.styles = []
+            self.has_root = False
+            self.has_body = False
+
+        def handle_starttag(self, tag, attrs):
+            attr_dict = dict(attrs)
+            if tag == 'script' and 'src' in attr_dict:
+                self.scripts.append(attr_dict['src'])
+            elif tag == 'link' and attr_dict.get('rel') == 'stylesheet' and 'href' in attr_dict:
+                self.styles.append(attr_dict['href'])
+            elif tag == 'div' and (attr_dict.get('id') in ['root', 'app'] or attr_dict.get('class') in ['app']):
+                self.has_root = True
+            elif tag == 'body':
+                self.has_body = True
+
+    for file_path in all_files:
+        rel_path = os.path.relpath(file_path, target_path if os.path.isdir(target_path) else os.path.dirname(target_path))
+        checked_files.append(rel_path)
+
+        if file_path.endswith('.html'):
+            try:
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read()
+
+                parser = HTMLAssetParser()
+                parser.feed(content)
+
+                for script_src in parser.scripts:
+                    if not script_src.startswith(('http://', 'https://', '//')):
+                        clean_src = script_src.split('?')[0].split('#')[0]
+                        asset_path = os.path.join(os.path.dirname(file_path), clean_src)
+                        if not os.path.exists(asset_path):
+                            console_errors.append(f"[CONSOLE ERROR 404] Script resource failed to load in '{rel_path}': <script src=\"{script_src}\"> file not found.")
+
+                for style_href in parser.styles:
+                    if not style_href.startswith(('http://', 'https://', '//')):
+                        clean_href = style_href.split('?')[0].split('#')[0]
+                        asset_path = os.path.join(os.path.dirname(file_path), clean_href)
+                        if not os.path.exists(asset_path):
+                            console_errors.append(f"[CONSOLE ERROR 404] Stylesheet resource failed to load in '{rel_path}': <link href=\"{style_href}\"> file not found.")
+
+                if not parser.has_root and not parser.has_body:
+                    warnings.append(f"[DOM WARNING] '{rel_path}' does not contain a <body> or root mount element (<div id=\"root\">).")
+
+            except Exception as e:
+                console_errors.append(f"[HTML PARSE ERROR] Syntax/Parse error in '{rel_path}': {str(e)}")
+
+        elif file_path.endswith(('.js', '.jsx', '.ts', '.tsx')):
+            try:
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    js_content = f.read()
+
+                brackets = {'(': ')', '{': '}', '[': ']'}
+                stack = []
+                in_string = None
+                is_escaped = False
+
+                for line_no, line in enumerate(js_content.split('\n'), 1):
+                    for char in line:
+                        if is_escaped:
+                            is_escaped = False
+                            continue
+                        if char == '\\':
+                            is_escaped = True
+                            continue
+                        if in_string:
+                            if char == in_string:
+                                in_string = None
+                            continue
+                        if char in ['"', "'", '`']:
+                            in_string = char
+                            continue
+                        if char in brackets:
+                            stack.append((char, line_no))
+                        elif char in brackets.values():
+                            if not stack:
+                                console_errors.append(f"[CONSOLE SYNTAX ERROR] Unexpected '{char}' at line {line_no} in '{rel_path}'.")
+                                break
+                            top_open, top_line = stack.pop()
+                            if brackets[top_open] != char:
+                                console_errors.append(f"[CONSOLE SYNTAX ERROR] Mismatched '{top_open}' from line {top_line} with '{char}' at line {line_no} in '{rel_path}'.")
+                                break
+
+                try:
+                    res = subprocess.run(['node', '-c', file_path], capture_output=True, text=True, timeout=5)
+                    if res.returncode != 0:
+                        err_lines = res.stderr.strip().split('\n')
+                        first_err = err_lines[0] if err_lines else "Syntax error"
+                        console_errors.append(f"[NODE CONSOLE ERROR] '{rel_path}': {first_err}")
+                except (FileNotFoundError, subprocess.TimeoutExpired):
+                    pass
+
+            except Exception as e:
+                console_errors.append(f"[JS ERROR] Failed to check '{rel_path}': {str(e)}")
+
+        elif file_path.endswith('.py'):
+            try:
+                py_compile.compile(file_path, doraise=True)
+            except py_compile.PyCompileError as ce:
+                console_errors.append(f"[PYTHON SYNTAX ERROR] In '{rel_path}': {ce.msg}")
+            except Exception as e:
+                console_errors.append(f"[PYTHON ERROR] In '{rel_path}': {str(e)}")
+
+    status = "PASSED" if not console_errors else "FAILED"
+    report = [
+        f"### 🖥️ Browser & Console Verification Audit ({status})",
+        f"- **Checked Files ({len(checked_files)}):** {', '.join(checked_files[:10])}",
+        f"- **Console Errors Detected:** {len(console_errors)}",
+        f"- **Warnings:** {len(warnings)}"
+    ]
+
+    if console_errors:
+        report.append("\n#### ❌ Console Errors Found:")
+        for err in console_errors:
+            report.append(f"- {err}")
+
+    if warnings:
+        report.append("\n#### ⚠️ Warnings:")
+        for w in warnings:
+            report.append(f"- {w}")
+
+    # --- Vision-Powered UI Screenshot Inspection (Gemma-4-26B) ---
+    try:
+        from .vision_service import analyze_ui_screenshot_with_vision
+        screenshot_file = None
+        
+        # Check if there is an HTML file or app screenshot available
+        for f in all_files:
+            if f.endswith('.html') or f.endswith(('.png', '.jpg', '.jpeg')):
+                screenshot_file = f
+                break
+
+        if screenshot_file:
+            vision_result = analyze_ui_screenshot_with_vision(
+                image_input=screenshot_file,
+                model_name=os.environ.get("VISION_MODEL", "gemma-4-26b")
+            )
+            report.append("\n#### 👁️ Vision Model UI Quality Inspection (Gemma-4-26B)")
+            report.append(vision_result.get("report", "No vision audit available."))
+            
+            if vision_result.get("has_visual_defects"):
+                console_errors.append("[VISUAL DEFECT DETECTED] Vision inspection flagged UI layout or styling flaws.")
+    except Exception as ve:
+        report.append(f"\n⚠️ Vision UI Audit Note: {ve}")
+
+    if not console_errors:
+        report.append("\n✓ All browser assets, script paths, DOM structures, and code syntax passed with 0 errors!")
+
+    return "\n".join(report)
+
+
+def _get_browser_tools() -> List[StructuredTool]:
+    """Get browser automation tools shared by Code and Analysis agents."""
+    from .browser_tools import (
+        browser_open_url,
+        browser_get_console_errors,
+        browser_take_screenshot,
+        browser_vision_audit,
+        browser_close
+    )
+    return [
+        StructuredTool.from_function(
+            name="browser_open_url",
+            func=lambda x: browser_open_url(
+                safe_parse_input(x).get("url", x if isinstance(x, str) else "http://localhost:5173")
+            ),
+            description="Open a URL in a real Chromium browser and capture console errors & network failures. Input: dict with 'url' (e.g. 'http://localhost:5173'). Returns page title, console error count, network error count."
+        ),
+        StructuredTool.from_function(
+            name="browser_get_console_errors",
+            func=lambda x: browser_get_console_errors(),
+            description="Get all captured console errors, warnings, and network failures from the currently open browser session. No input needed. Returns a formatted report of all errors."
+        ),
+        StructuredTool.from_function(
+            name="browser_take_screenshot",
+            func=lambda x: browser_take_screenshot(
+                safe_parse_input(x).get("name", "screenshot"),
+                safe_parse_input(x).get("full_page", False)
+            ),
+            description="Take a screenshot of the current browser viewport. Input: dict with 'name' (filename without extension, e.g. 'initial_ui') and optional 'full_page' (boolean). Returns saved screenshot path."
+        ),
+        StructuredTool.from_function(
+            name="browser_vision_audit",
+            func=lambda x: browser_vision_audit(
+                safe_parse_input(x).get("prompt", "")
+            ),
+            description="Take a browser screenshot and analyze it with Gemma4:26b vision model for UI quality, layout bugs, and styling issues. Input: dict with optional 'prompt' for custom analysis focus. Returns a detailed UI audit report."
+        ),
+        StructuredTool.from_function(
+            name="browser_close",
+            func=lambda x: browser_close(),
+            description="Close the browser session and cleanup resources. No input needed."
+        ),
+    ]
+
+
 def get_code_agent_tools() -> List[StructuredTool]:
     """Get tools for Code Agent"""
     return [
+        StructuredTool.from_function(
+            name="verify_app_browser_console",
+            func=lambda x: verify_app_browser_console(
+                safe_parse_input(x).get("target_dir", x if isinstance(x, str) else "")
+            ),
+            description="Run browser & console verification checks on generated app files. Checks HTML, script links (404s), JS console syntax errors, and Python syntax. Input: dict with optional 'target_dir'."
+        ),
         StructuredTool.from_function(
             name="execute_code",
             func=lambda x: execute_python_code(
@@ -804,7 +1221,7 @@ def get_code_agent_tools() -> List[StructuredTool]:
                 safe_parse_input(x).get("path", ""),
                 safe_parse_input(x).get("content", "")
             ),
-            description=f"Perform file operations in workspace ({AGENT_WORKSPACE_DIR}). Operations: 'read', 'write', 'list'. Input should be a dict with 'operation', 'path' (relative to workspace), and optional 'content' keys."
+            description=f"Perform file operations in workspace ({AGENT_WORKSPACE_DIR}). Operations: 'read', 'write', 'list', 'patch'. Input should be a dict with 'operation', 'path' (relative to workspace), and optional 'content' keys."
         ),
         StructuredTool.from_function(
             name="create_project",
@@ -834,7 +1251,7 @@ def get_code_agent_tools() -> List[StructuredTool]:
             ),
             description="Schedule a future or recurring task. Input should be a dict with 'task_name', 'prompt' (the instruction to execute later), 'interval_minutes' (0 for one-time, >0 for recurring), and 'delay_minutes' (minutes from now until first run). Use this when the user wants something checked periodically or at a future time."
         ),
-    ]
+    ] + _get_browser_tools()
 
 
 def get_research_agent_tools() -> List[StructuredTool]:
@@ -860,6 +1277,13 @@ def get_analysis_agent_tools() -> List[StructuredTool]:
     """Get tools for Analysis Agent"""
     return [
         StructuredTool.from_function(
+            name="verify_app_browser_console",
+            func=lambda x: verify_app_browser_console(
+                safe_parse_input(x).get("target_dir", x if isinstance(x, str) else "")
+            ),
+            description="Run static browser & console verification checks on generated app files. Checks HTML, script links (404s), JS console syntax errors, and Python syntax. Input: dict with optional 'target_dir'. NOTE: For real browser testing with console errors, use browser_open_url + browser_get_console_errors instead."
+        ),
+        StructuredTool.from_function(
             name="analyze_code",
             func=lambda x: analyze_code(safe_parse_input(x).get("code", x if isinstance(x, str) else x)),
             description="Analyze code for issues and improvements. Input should be the code as a string."
@@ -871,7 +1295,158 @@ def get_analysis_agent_tools() -> List[StructuredTool]:
                 safe_parse_input(x).get("path", ""),
                 safe_parse_input(x).get("content", "")
             ),
-            description="Read files for analysis. Input should be a dict with 'operation' and 'path' keys."
+            description="Perform file operations in workspace. Operations: 'read', 'write', 'list', 'patch'. Input should be a dict with 'operation', 'path', and optional 'content' keys."
+        ),
+    ] + _get_browser_tools()
+
+
+def csv_sheet_operation(operation: str, path: str, data: Optional[List[List[Any]]] = None) -> str:
+    """Perform CSV spreadsheet operations (write, read, append) in workspace safely"""
+    try:
+        # Path resolution
+        if not os.path.isabs(path) or path.startswith('/') or path.startswith('\\'):
+            rel_path = path.lstrip('/\\')
+            path = get_workspace_path(rel_path)
+
+        if not check_and_request_permission(path):
+            return f"Error: Access denied. Path must be whitelisted: {path}"
+
+        if not is_allowed_extension(path):
+            return f"Error: File extension not allowed. File: {path}"
+
+        op = operation.lower().strip()
+
+        # Parse data if passed as string
+        if data is not None and isinstance(data, str):
+            try:
+                data = json.loads(data)
+            except Exception:
+                try:
+                    import ast
+                    data = ast.literal_eval(data)
+                except Exception:
+                    return "Error: Invalid data format for CSV operation. Must be a 2D list of rows."
+
+        if op == "read":
+            if not os.path.exists(path):
+                return f"Error: File does not exist: {path}"
+            if os.path.getsize(path) > MAX_FILE_SIZE:
+                return f"Error: File size exceeds maximum allowed size ({MAX_FILE_SIZE} bytes)"
+            
+            rows = []
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                reader = csv.reader(f)
+                for row in reader:
+                    rows.append(row)
+
+            if not rows:
+                return f"CSV file '{os.path.basename(path)}' is empty."
+            
+            headers = rows[0]
+            num_rows = len(rows) - 1
+            num_cols = len(headers)
+            
+            output = [f"### CSV File: {os.path.basename(path)} ({num_rows} data rows, {num_cols} columns)\n"]
+            output.append("| " + " | ".join(str(cell) for cell in headers) + " |")
+            output.append("| " + " | ".join(["---"] * len(headers)) + " |")
+            for r in rows[1:101]:
+                output.append("| " + " | ".join(str(cell) for cell in r) + " |")
+            
+            if len(rows) > 101:
+                output.append(f"\n*... displaying first 100 rows out of {num_rows} rows.*")
+            
+            return "\n".join(output)
+
+        elif op == "write":
+            if data is None or not isinstance(data, list):
+                return "Error: Data parameter (2D list of rows) is required for write operation."
+            
+            os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+            with open(path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerows(data)
+            
+            num_rows = len(data)
+            num_cols = len(data[0]) if num_rows > 0 and isinstance(data[0], list) else 0
+            rel_display = os.path.relpath(path, AGENT_WORKSPACE_DIR) if path.startswith(AGENT_WORKSPACE_DIR) else path
+            return f"[SUCCESS] Successfully created CSV spreadsheet at '{rel_display}' with {num_rows} rows and {num_cols} columns."
+
+        elif op == "append":
+            if data is None or not isinstance(data, list):
+                return "Error: Data parameter (2D list of rows) is required for append operation."
+            
+            if not os.path.exists(path):
+                os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+                with open(path, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.writer(f)
+                    writer.writerows(data)
+                num_rows = len(data)
+                rel_display = os.path.relpath(path, AGENT_WORKSPACE_DIR) if path.startswith(AGENT_WORKSPACE_DIR) else path
+                return f"[SUCCESS] Created new CSV spreadsheet at '{rel_display}' and appended {num_rows} rows."
+            else:
+                with open(path, "a", newline="", encoding="utf-8") as f:
+                    writer = csv.writer(f)
+                    writer.writerows(data)
+                num_rows = len(data)
+                rel_display = os.path.relpath(path, AGENT_WORKSPACE_DIR) if path.startswith(AGENT_WORKSPACE_DIR) else path
+                return f"[SUCCESS] Appended {num_rows} rows to CSV spreadsheet at '{rel_display}'."
+
+        else:
+            return f"Error: Unknown operation '{operation}'. Supported operations: 'write', 'read', 'append'"
+
+    except Exception as e:
+        return f"Error executing csv_sheet_operation: {str(e)}"
+
+
+def get_business_agent_tools() -> List[StructuredTool]:
+    """Get tools for Business Agent"""
+    from .business_tools import generate_presentation, generate_excel_sheet, read_excel_sheet
+    return [
+        StructuredTool.from_function(
+            name="generate_presentation",
+            func=lambda x: generate_presentation(
+                safe_parse_input(x).get("title", "Presentation"),
+                safe_parse_input(x).get("subtitle", ""),
+                safe_parse_input(x).get("slides_json", ""),
+                safe_parse_input(x).get("theme_color", "#1E3A8A"),
+                safe_parse_input(x).get("filename", "presentation")
+            ),
+            description="Generate a professional PowerPoint presentation (.pptx) AND interactive HTML slide deck (.html). Input: dict with 'title', optional 'subtitle', 'slides_json' (JSON string array of slide objects), optional 'theme_color' hex, and 'filename'."
+        ),
+        StructuredTool.from_function(
+            name="generate_excel_sheet",
+            func=lambda x: generate_excel_sheet(
+                safe_parse_input(x).get("title", "Financial Spreadsheet"),
+                safe_parse_input(x).get("sheets_json", ""),
+                safe_parse_input(x).get("theme_color", "1E3A8A"),
+                safe_parse_input(x).get("filename", "spreadsheet")
+            ),
+            description="Generate a styled Excel workbook (.xlsx) with formatting, Excel formulas (SUM, AVERAGE), multi-tab sheets, and native charts. Input: dict with 'title', 'sheets_json' (JSON string array of sheet specs), optional 'theme_color' hex, and 'filename'."
+        ),
+        StructuredTool.from_function(
+            name="read_excel_sheet",
+            func=lambda x: read_excel_sheet(
+                safe_parse_input(x).get("filename_or_path", x if isinstance(x, str) else "")
+            ),
+            description="Read data, formulas, and worksheets from an Excel workbook (.xlsx). Input: filename or path."
+        ),
+        StructuredTool.from_function(
+            name="csv_sheet_operation",
+            func=lambda x: csv_sheet_operation(
+                safe_parse_input(x).get("operation", "read"),
+                safe_parse_input(x).get("path", ""),
+                safe_parse_input(x).get("data", None)
+            ),
+            description="Perform CSV spreadsheet operations in workspace. Operations: 'write', 'read', 'append'. Input should be a dict with 'operation' ('write'/'read'/'append'), 'path' (CSV file path), and optional 'data' (2D array of rows for write/append)."
+        ),
+        StructuredTool.from_function(
+            name="file_operation",
+            func=lambda x: file_operation(
+                safe_parse_input(x).get("operation", "read"),
+                safe_parse_input(x).get("path", ""),
+                safe_parse_input(x).get("content", "")
+            ),
+            description="Perform file operations in workspace (read, write business strategy reports). Input should be a dict with 'operation', 'path', and optional 'content'."
         ),
     ]
 
@@ -881,6 +1456,7 @@ AGENT_TOOLS = {
     "code": get_code_agent_tools,
     "research": get_research_agent_tools,
     "analysis": get_analysis_agent_tools,
+    "business": get_business_agent_tools,
 }
 
 
@@ -904,6 +1480,7 @@ def get_tools_by_names(tool_names: List[str]) -> List[StructuredTool]:
     all_system_tools.extend(get_code_agent_tools())
     all_system_tools.extend(get_research_agent_tools())
     all_system_tools.extend(get_analysis_agent_tools())
+    all_system_tools.extend(get_business_agent_tools())
     all_system_tools.append(delegate_to_sub_agent)
     
     seen = set()

@@ -9,3 +9,10 @@ langchain
 langchain-community
 langgraph
 litellm
+SpeechRecognition
+motor
+pymongo
+playwright
+python-pptx
+openpyxl
+xlsxwriter

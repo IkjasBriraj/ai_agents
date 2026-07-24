@@ -11,13 +11,13 @@ interface BuilderProps {
 export const AgentBuilder: React.FC<BuilderProps> = ({ onAgentCreated }) => {
   const [step, setStep] = useState(1);
   const [availableModels, setAvailableModels] = useState<string[]>([
-    'qwen3.5:9b', 'gemma4:31b-cloud', 'granite4.1:8b', 'llama3', 'mistral'
+    'granite4.1:8b', 'gemma4:31b-cloud', 'llama3', 'mistral'
   ]);
   const [formData, setFormData] = useState<Partial<Agent>>({
     name: '',
     persona: '',
     system_prompt: '',
-    base_model: 'qwen3.5:9b',
+    base_model: 'granite4.1:8b',
     tools: []
   });
 
@@ -42,7 +42,7 @@ export const AgentBuilder: React.FC<BuilderProps> = ({ onAgentCreated }) => {
     const id = Math.random().toString(36).substring(7);
     await OllamaService.createAgent({ ...formData, id } as Agent);
     setStep(1);
-    setFormData({ name: '', persona: '', system_prompt: '', base_model: availableModels[0] || 'qwen3.5:9b', tools: [] });
+    setFormData({ name: '', persona: '', system_prompt: '', base_model: availableModels[0] || 'granite4.1:8b', tools: [] });
     onAgentCreated();
   };
 

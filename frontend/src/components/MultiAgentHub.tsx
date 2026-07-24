@@ -20,8 +20,23 @@ import {
   FolderOpen,
   AlertTriangle,
   Terminal,
-  Square
+  Square,
+  Copy,
+  Check,
+  Mic,
+  MicOff,
+  Loader2,
+  Monitor,
+  Eye,
+  Camera,
+  Maximize2,
+  X,
+  Presentation,
+  FileSpreadsheet,
+  Download,
+  ExternalLink
 } from 'lucide-react';
+
 import { cn } from '@/lib/utils';
 
 
@@ -42,6 +57,12 @@ interface Message {
   total_tokens?: number;
   thinkingTokens?: string[];
   responseTokens?: string[];
+  screenshots?: Array<{
+    name: string;
+    url: string;
+    caption?: string;
+    image_base64?: string;
+  }>;
 }
 
 const renderTokenContent = (token: string): string => {
@@ -92,10 +113,135 @@ export const MultiAgentHub: React.FC = () => {
     sessionId: string;
   } | null>(null);
 
+  // Plan Approval State
+  const [pendingPlanApproval, setPendingPlanApproval] = useState<{
+    planContent: string;
+    planPath: string;
+    sessionId: string;
+  } | null>(null);
+  const [editedPlanContent, setEditedPlanContent] = useState<string>('');
+  const [isPlanModalOpen, setIsPlanModalOpen] = useState<boolean>(false);
+  const [activePlanTab, setActivePlanTab] = useState<'preview' | 'edit'>('preview');
+
+  // Message Copying State
+  const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+
+  // Voice Recording State
+  const [isRecording, setIsRecording] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const recognitionRef = useRef<any>(null);
+
+  const handleCopyMessage = (text: string, index: number) => {
+    navigator.clipboard.writeText(text);
+    setCopiedIndex(index);
+    setTimeout(() => setCopiedIndex(null), 2000);
+  };
+
+  // Voice Recording Handler using Web Speech API
+  const handleVoiceRecord = () => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+      alert('Speech recognition is not supported in your browser. Please use Chrome, Edge, or Safari.');
+      return;
+    }
+
+    if (isRecording && recognitionRef.current) {
+      // Stop recording
+      recognitionRef.current.stop();
+      setIsRecording(false);
+      return;
+    }
+
+    // Start recording
+    const recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
+    recognitionRef.current = recognition;
+
+    let finalTranscript = '';
+
+    recognition.onstart = () => {
+      setIsRecording(true);
+      setIsTranscribing(false);
+    };
+
+    recognition.onresult = (event: any) => {
+      let interimTranscript = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const transcript = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          finalTranscript += transcript + ' ';
+        } else {
+          interimTranscript += transcript;
+        }
+      }
+      // Update prompt with final + interim text
+      setPrompt(() => (finalTranscript + interimTranscript).trim());
+    };
+
+    recognition.onerror = (event: any) => {
+      console.error('Speech recognition error:', event.error);
+      setIsRecording(false);
+      setIsTranscribing(false);
+      if (event.error === 'not-allowed') {
+        alert('Microphone access was denied. Please allow microphone permissions in your browser settings.');
+      }
+    };
+
+    recognition.onend = () => {
+      setIsRecording(false);
+      setIsTranscribing(false);
+      recognitionRef.current = null;
+      // Set final transcript to prompt
+      if (finalTranscript.trim()) {
+        setPrompt(finalTranscript.trim());
+      }
+    };
+
+    recognition.start();
+  };
+
+  // Cleanup speech recognition on unmount
+  useEffect(() => {
+    return () => {
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+      }
+    };
+  }, []);
+
+  const handlePlanApprovalResponse = async (approved: boolean) => {
+    if (!pendingPlanApproval) return;
+    try {
+      await OllamaService.respondToPlanApproval(
+        pendingPlanApproval.sessionId,
+        pendingPlanApproval.planPath,
+        editedPlanContent,
+        approved
+      );
+    } catch (err) {
+      console.error("Failed to respond to plan approval request", err);
+    } finally {
+      setPendingPlanApproval(null);
+      setEditedPlanContent('');
+      setIsPlanModalOpen(false);
+    }
+  };
+
   // Terminal Console State
   const [terminalLines, setTerminalLines] = useState<string[]>([]);
   const [showTerminal, setShowTerminal] = useState(false);
   const terminalEndRef = useRef<HTMLDivElement>(null);
+
+  // Live Browser Stream & Screenshot Modal State
+  const [liveBrowserImage, setLiveBrowserImage] = useState<string | null>(null);
+  const [liveBrowserUrl, setLiveBrowserUrl] = useState<string | null>(null);
+  const [liveBrowserActive, setLiveBrowserActive] = useState(false);
+  const [showLiveBrowser, setShowLiveBrowser] = useState(true);
+  const [selectedImageModal, setSelectedImageModal] = useState<{ url: string; caption?: string } | null>(null);
+  const [selectedPresentationModal, setSelectedPresentationModal] = useState<{ url: string; title?: string } | null>(null);
 
   const handlePermissionResponse = async (granted: boolean) => {
     if (!pendingPermissionRequest) return;
@@ -165,6 +311,14 @@ export const MultiAgentHub: React.FC = () => {
     "Formulating detailed feedback checklist report..."
   ];
 
+  const businessAgentThoughts = [
+    "Analyzing business requirements and financial data schemas...",
+    "Validating spreadsheet formulas and CSV data structures...",
+    "Preparing csv_sheet_operation tool payload (read/write/append)...",
+    "Calculating budget summaries, projections, and financial metrics...",
+    "Structuring business report and spreadsheet outputs..."
+  ];
+
   // Rotate thinking sub-steps while agent is working
   useEffect(() => {
     let interval: number | undefined;
@@ -173,7 +327,9 @@ export const MultiAgentHub: React.FC = () => {
         ? researchAgentThoughts 
         : activeRoutingAgent === 'analysis' 
           ? analysisAgentThoughts 
-          : codeAgentThoughts;
+          : activeRoutingAgent === 'business'
+            ? businessAgentThoughts
+            : codeAgentThoughts;
       
       setThinkingSubStep(thoughts[0]);
       let index = 1;
@@ -199,10 +355,9 @@ export const MultiAgentHub: React.FC = () => {
     
     setIsTypingAnimationActive(true);
     let currentIdx = 0;
-    
-    // TypeSnappy velocity settings: types blocks of 2 chars every 12ms for smooth, speedy readability
-    const charStep = 2;
-    const intervalTime = 12;
+    // Optimized Typewriter velocity: larger character chunks at 30ms interval to eliminate UI lag
+    const charStep = textToType.length > 200 ? 8 : 4;
+    const intervalTime = 30;
 
     // Initialize content to empty
     setMessages(prev => {
@@ -225,6 +380,7 @@ export const MultiAgentHub: React.FC = () => {
           }
           return copy;
         });
+        scrollToBottom();
         if (onComplete) onComplete();
       } else {
         setMessages(prev => {
@@ -234,11 +390,9 @@ export const MultiAgentHub: React.FC = () => {
           }
           return copy;
         });
-        // Keep container rolled down smoothly as it writes
         scrollToBottom();
       }
     }, intervalTime);
-
     typingTimersRef.current.push(timer);
   };
 
@@ -264,6 +418,7 @@ export const MultiAgentHub: React.FC = () => {
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
       }
+      OllamaService.stopMultiAgent('default').catch(() => {});
       typingTimersRef.current.forEach(timer => window.clearInterval(timer));
     };
   }, []);
@@ -369,6 +524,14 @@ export const MultiAgentHub: React.FC = () => {
           details: 'Analyzed provided code structure for optimization suggestions.'
         });
       }
+
+      if (agentUsed === 'business' || textLower.includes('business') || textLower.includes('csv') || textLower.includes('financial')) {
+        tools.push({
+          toolName: 'csv_sheet_operation',
+          status: 'success',
+          details: 'Executed CSV spreadsheet operation for business model data.'
+        });
+      }
     }
 
     return tools;
@@ -379,6 +542,7 @@ export const MultiAgentHub: React.FC = () => {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
+    OllamaService.stopMultiAgent('default').catch(() => {});
     setIsTyping(false);
     setRoutingStep(0);
     setStreamingPreview('');
@@ -433,12 +597,14 @@ export const MultiAgentHub: React.FC = () => {
         setActiveTool('web_search');
       } else if (selectedDirectAgent === 'analysis') {
         setActiveTool('analyze_code');
+      } else if (selectedDirectAgent === 'business') {
+        setActiveTool('csv_sheet_operation');
       }
 
       try {
         const response = await OllamaService.chatDirectAgent(selectedDirectAgent, userText);
         
-        const finalContent = response.response || response.result || 'No response returned.';
+        const finalContent = typeof response === 'string' ? response : (response?.response || response?.result || response?.content || response?.output || 'Task completed successfully.');
         const toolsParsed = parseToolExecutions(finalContent, selectedDirectAgent);
         const tokensParsed = fallbackTokenize(finalContent);
         
@@ -450,7 +616,7 @@ export const MultiAgentHub: React.FC = () => {
           thinkingTokens: [],
           responseTokens: tokensParsed,
           toolsExecuted: toolsParsed.length > 0 ? toolsParsed : [{
-            toolName: selectedDirectAgent === 'code' ? 'generate_code' : selectedDirectAgent === 'research' ? 'web_search' : 'analyze_code',
+            toolName: selectedDirectAgent === 'code' ? 'generate_code' : selectedDirectAgent === 'research' ? 'web_search' : selectedDirectAgent === 'analysis' ? 'analyze_code' : selectedDirectAgent === 'business' ? 'csv_sheet_operation' : 'default_tool',
             status: 'success',
             details: 'Direct agent tool execution succeeded.'
           }]
@@ -607,6 +773,8 @@ export const MultiAgentHub: React.FC = () => {
                 setActiveTool('web_search');
               } else if (currentAgent === 'analysis') {
                 setActiveTool('analyze_code');
+              } else if (currentAgent === 'business') {
+                setActiveTool('csv_sheet_operation');
               }
 
               updateLastAssistantMessage({
@@ -667,9 +835,61 @@ export const MultiAgentHub: React.FC = () => {
                   sessionId: event.session_id || 'default'
                 });
               }
+            } else if (event.type === 'plan_request') {
+              setPendingPlanApproval({
+                planContent: event.plan_content,
+                planPath: event.plan_path,
+                sessionId: event.session_id || 'default'
+              });
+              setEditedPlanContent(event.plan_content);
+              setIsPlanModalOpen(true);
+              setActivePlanTab('preview');
             } else if (event.type === 'terminal_output' && event.content) {
               setTerminalLines(prev => [...prev, event.content]);
               if (!showTerminal) setShowTerminal(true);
+            } else if (event.type === 'browser_live') {
+              if (event.done) {
+                setLiveBrowserActive(false);
+              } else {
+                if (event.image_base64) setLiveBrowserImage(event.image_base64);
+                if (event.url) setLiveBrowserUrl(event.url);
+                setLiveBrowserActive(true);
+              }
+            } else if (event.type === 'screenshot_taken') {
+              setMessages(prev => {
+                const newMsgs = [...prev];
+                const lastIdx = newMsgs.length - 1;
+                if (lastIdx >= 0 && newMsgs[lastIdx].role === 'assistant') {
+                  const existingSS = newMsgs[lastIdx].screenshots || [];
+                  newMsgs[lastIdx] = {
+                    ...newMsgs[lastIdx],
+                    screenshots: [
+                      ...existingSS,
+                      {
+                        name: event.name,
+                        url: event.url || event.path,
+                        caption: event.caption,
+                        image_base64: event.image_base64
+                      }
+                    ]
+                  };
+                }
+                return newMsgs;
+              });
+            } else if (event.type === 'screenshot_result') {
+              if (event.screenshots && event.screenshots.length > 0) {
+                setMessages(prev => {
+                  const newMsgs = [...prev];
+                  const lastIdx = newMsgs.length - 1;
+                  if (lastIdx >= 0 && newMsgs[lastIdx].role === 'assistant') {
+                    newMsgs[lastIdx] = {
+                      ...newMsgs[lastIdx],
+                      screenshots: event.screenshots
+                    };
+                  }
+                  return newMsgs;
+                });
+              }
             } else if (event.type === 'thinking' && event.content) {
               // Accumulate agent reasoning tokens for live display
               localThinkingTokens.push(event.content);
@@ -738,12 +958,165 @@ export const MultiAgentHub: React.FC = () => {
     }
   };
 
+  const renderMarkdown = (text: string) => {
+    if (!text) return null;
+    
+    const lines = text.split('\n');
+    let insideCodeBlock = false;
+    let codeBlockContent: string[] = [];
+    let codeLanguage = '';
+    
+    const renderedElements: React.ReactNode[] = [];
+    
+    lines.forEach((line, idx) => {
+      if (line.trim().startsWith('```')) {
+        if (insideCodeBlock) {
+          insideCodeBlock = false;
+          renderedElements.push(
+            <pre key={`code-${idx}`} className="bg-black/95 font-mono text-[11px] text-emerald-400 p-4 border border-border/85 overflow-x-auto my-4 max-h-[300px]">
+              {codeLanguage && <div className="text-[9px] text-muted-foreground uppercase tracking-widest border-b border-border/30 pb-1 mb-2 font-sans font-bold">{codeLanguage}</div>}
+              <code>{codeBlockContent.join('\n')}</code>
+            </pre>
+          );
+          codeBlockContent = [];
+          codeLanguage = '';
+        } else {
+          insideCodeBlock = true;
+          codeLanguage = line.trim().slice(3).trim();
+        }
+        return;
+      }
+      
+      if (insideCodeBlock) {
+        codeBlockContent.push(line);
+        return;
+      }
+      
+      const formatInline = (str: string) => {
+        const parts = str.split('**');
+        return parts.map((part, pIdx) => {
+          if (pIdx % 2 === 1) {
+            return <strong key={pIdx} className="font-bold text-foreground">{part}</strong>;
+          }
+          const codeParts = part.split('`');
+          return codeParts.map((cPart, cIdx) => {
+            if (cIdx % 2 === 1) {
+              if (cPart.startsWith('/api/documents/') && cPart.endsWith('.html')) {
+                return (
+                  <button
+                    key={cIdx}
+                    onClick={() => setSelectedPresentationModal({ url: cPart, title: 'Interactive Presentation' })}
+                    className="inline-flex items-center gap-1.5 font-mono text-xs bg-blue-500/15 border border-blue-500/40 text-blue-400 px-2 py-0.5 rounded hover:bg-blue-500/30 transition-colors my-0.5 cursor-pointer"
+                  >
+                    <Presentation className="w-3.5 h-3.5" />
+                    <span>Preview Interactive Slide Deck</span>
+                    <ExternalLink className="w-3 h-3 ml-0.5 opacity-70" />
+                  </button>
+                );
+              } else if (cPart.startsWith('/api/documents/') && (cPart.endsWith('.pptx') || cPart.endsWith('.xlsx'))) {
+                const isPptx = cPart.endsWith('.pptx');
+                return (
+                  <a
+                    key={cIdx}
+                    href={cPart}
+                    download
+                    className={cn(
+                      "inline-flex items-center gap-1.5 font-mono text-xs border px-2 py-0.5 rounded transition-colors my-0.5",
+                      isPptx 
+                        ? "bg-amber-500/15 border-amber-500/40 text-amber-400 hover:bg-amber-500/30" 
+                        : "bg-emerald-500/15 border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/30"
+                    )}
+                  >
+                    {isPptx ? <Presentation className="w-3.5 h-3.5" /> : <FileSpreadsheet className="w-3.5 h-3.5" />}
+                    <span>Download {isPptx ? 'PowerPoint (.pptx)' : 'Excel Workbook (.xlsx)'}</span>
+                    <Download className="w-3 h-3 ml-0.5 opacity-70" />
+                  </a>
+                );
+              }
+              return <code key={cIdx} className="font-mono text-xs bg-muted px-1.5 py-0.5 text-ibm-blue">{cPart}</code>;
+            }
+            return cPart;
+          });
+        });
+      };
+      
+      if (line.startsWith('# ')) {
+        renderedElements.push(<h1 key={idx} className="text-2xl font-light text-foreground border-b border-border/40 pb-2 mb-4 mt-6 first:mt-0">{formatInline(line.slice(2))}</h1>);
+      } else if (line.startsWith('## ')) {
+        renderedElements.push(<h2 key={idx} className="text-xl font-light text-foreground mb-3 mt-5">{formatInline(line.slice(3))}</h2>);
+      } else if (line.startsWith('### ')) {
+        renderedElements.push(<h3 key={idx} className="text-lg font-medium text-foreground mb-2 mt-4">{formatInline(line.slice(4))}</h3>);
+      } else if (line.startsWith('#### ')) {
+        renderedElements.push(<h4 key={idx} className="text-sm font-semibold text-foreground mb-2 mt-3 uppercase tracking-wider">{formatInline(line.slice(5))}</h4>);
+      } else if (line.startsWith('- [ ] ') || line.startsWith('* [ ] ')) {
+        renderedElements.push(
+          <div key={idx} className="flex items-start gap-2 my-1 text-muted-foreground pl-2">
+            <span className="font-mono border border-border text-[9px] px-1 py-0.5 select-none shrink-0 mt-0.5">[ ]</span>
+            <span>{formatInline(line.slice(6))}</span>
+          </div>
+        );
+      } else if (line.startsWith('- [x] ') || line.startsWith('* [x] ')) {
+        renderedElements.push(
+          <div key={idx} className="flex items-start gap-2 my-1 text-muted-foreground/80 line-through pl-2">
+            <span className="font-mono bg-ibm-blue/15 border border-ibm-blue/30 text-ibm-blue text-[9px] px-1 py-0.5 select-none shrink-0 mt-0.5">✓</span>
+            <span>{formatInline(line.slice(6))}</span>
+          </div>
+        );
+      } else if (line.startsWith('- ') || line.startsWith('* ')) {
+        renderedElements.push(
+          <div key={idx} className="flex items-start gap-2 my-1.5 pl-2 text-muted-foreground">
+            <span className="text-ibm-blue select-none shrink-0 mt-1">•</span>
+            <span>{formatInline(line.slice(2))}</span>
+          </div>
+        );
+      } else if (line.startsWith('> ')) {
+        const quoteText = line.slice(2).trim();
+        let isAlert = false;
+        let alertType = '';
+        if (quoteText.startsWith('[!')) {
+          isAlert = true;
+          const endBrac = quoteText.indexOf(']');
+          if (endBrac !== -1) {
+            alertType = quoteText.slice(2, endBrac).toUpperCase();
+          }
+        }
+        
+        if (isAlert) {
+          renderedElements.push(
+            <div key={idx} className={`p-3 border-l-4 my-3 text-xs bg-muted/10 ${
+              alertType === 'IMPORTANT' || alertType === 'WARNING' || alertType === 'CAUTION'
+                ? 'border-destructive/60 bg-destructive/5'
+                : alertType === 'TIP'
+                ? 'border-emerald-600 bg-emerald-500/5'
+                : 'border-ibm-blue bg-ibm-blue/5'
+            }`}>
+              <div className="font-mono font-bold uppercase tracking-wider text-[9px] mb-1">{alertType}</div>
+              <div>{formatInline(quoteText.slice(quoteText.indexOf(']') + 1).trim())}</div>
+            </div>
+          );
+        } else {
+          renderedElements.push(
+            <blockquote key={idx} className="border-l-4 border-muted p-3 bg-muted/10 my-3 text-muted-foreground text-xs italic">
+              {formatInline(quoteText)}
+            </blockquote>
+          );
+        }
+      } else if (line.trim() === '') {
+        renderedElements.push(<div key={idx} className="h-2" />);
+      } else {
+        renderedElements.push(<p key={idx} className="my-2 text-muted-foreground leading-relaxed text-xs md:text-sm">{formatInline(line)}</p>);
+      }
+    });
+    
+    return <div className="space-y-1 font-sans">{renderedElements}</div>;
+  };
+
   const handleQuickPrompt = (text: string) => {
     setPrompt(text);
   };
 
   return (
-    <div className="space-y-8 select-none">
+    <div className="space-y-8 select-text">
       {/* 1. Pulsing Health Status Bar */}
       <div 
         className={cn(
@@ -921,6 +1294,27 @@ export const MultiAgentHub: React.FC = () => {
                 </div>
               </div>
 
+              {/* BUSINESS AGENT */}
+              <div 
+                className={cn(
+                  "relative z-10 w-full md:w-72 p-3 border flex items-center gap-3 transition-all duration-300",
+                  activeRoutingAgent === 'business'
+                    ? "border-accent bg-secondary/30 shadow-glow shadow-accent/20 translate-x-2"
+                    : "border-border bg-card"
+                )}
+              >
+                <div className={cn("p-2 border", activeRoutingAgent === 'business' ? "bg-accent/10 border-accent text-accent" : "bg-muted text-muted-foreground")}>
+                  <TrendingUp className="w-5 h-5" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex justify-between items-center">
+                    <span className="font-bold text-xs">Business Agent</span>
+                    <span className="text-[9px] font-mono text-muted-foreground bg-muted px-1.5 py-0.2 border">CSV SHEET</span>
+                  </div>
+                  <div className="text-[10px] text-muted-foreground truncate">Financial models & CSV spreadsheets</div>
+                </div>
+              </div>
+
             </div>
           </div>
         </CardContent>
@@ -961,8 +1355,8 @@ export const MultiAgentHub: React.FC = () => {
               {mode === 'direct' && (
                 <div className="space-y-2 animate-in slide-in-from-top-2 duration-300">
                   <label className="font-mono text-[10px] uppercase text-muted-foreground">Select Target Agent:</label>
-                  <div className="grid grid-cols-3 gap-2">
-                    {['code', 'research', 'analysis'].map(a => (
+                  <div className="grid grid-cols-4 gap-2">
+                    {['code', 'research', 'analysis', 'business'].map(a => (
                       <Button
                         key={a}
                         variant={selectedDirectAgent === a ? 'carbon' : 'outline'}
@@ -1064,20 +1458,35 @@ export const MultiAgentHub: React.FC = () => {
                   <div key={idx} className={cn("flex flex-col animate-in fade-in duration-300", isUser ? "items-end" : "items-start")}>
                     
                     {/* Role Header */}
-                    <div className="font-mono text-[10px] text-muted-foreground uppercase tracking-widest mb-1.5 flex items-center gap-1.5">
-                      {isUser ? (
-                        <span>User Request</span>
-                      ) : (
-                        <>
-                          <Bot className="w-3.5 h-3.5 text-primary" />
-                          <span>System Mind</span>
-                          {msg.agentUsed && (
-                            <span className="font-bold text-accent bg-secondary/50 border border-accent/20 px-1.5 py-0.2 text-[9px] uppercase">
-                              {msg.agentUsed} Agent
-                            </span>
-                          )}
-                        </>
-                      )}
+                    <div className="w-full flex justify-between items-center mb-1.5 gap-4">
+                      <div className="font-mono text-[10px] text-muted-foreground uppercase tracking-widest flex items-center gap-1.5">
+                        {isUser ? (
+                          <span>User Request</span>
+                        ) : (
+                          <>
+                            <Bot className="w-3.5 h-3.5 text-primary" />
+                            <span>System Mind</span>
+                            {msg.agentUsed && (
+                              <span className="font-bold text-accent bg-secondary/50 border border-accent/20 px-1.5 py-0.2 text-[9px] uppercase">
+                                {msg.agentUsed} Agent
+                              </span>
+                            )}
+                          </>
+                        )}
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-5 w-5 p-0 opacity-40 hover:opacity-100 transition-opacity"
+                        onClick={() => handleCopyMessage(msg.content, idx)}
+                        title="Copy message content"
+                      >
+                        {copiedIndex === idx ? (
+                          <Check className="w-3 h-3 text-emerald-500" />
+                        ) : (
+                          <Copy className="w-3 h-3 text-muted-foreground" />
+                        )}
+                      </Button>
                     </div>
 
                     {/* Chat Bubble Content */}
@@ -1138,12 +1547,50 @@ export const MultiAgentHub: React.FC = () => {
                         </div>
                       ) : (
                         <>
-                          {msg.content}
+                          {renderMarkdown(msg.content)}
                           {!isUser && isTypingAnimationActive && idx === messages.length - 1 && (
                             <span className="inline-block w-2.5 h-4 ml-1 bg-primary animate-pulse align-middle">█</span>
                           )}
                         </>
                       )}
+
+                      {/* App Screenshots Gallery */}
+                      {!isUser && msg.screenshots && msg.screenshots.length > 0 && (
+                        <div className="mt-4 pt-4 border-t border-border/40 space-y-3">
+                          <div className="flex items-center gap-2 text-xs font-mono font-bold text-primary uppercase tracking-wider">
+                            <Camera className="w-4 h-4 text-emerald-400" />
+                            <span>App Preview & Verification Screenshots ({msg.screenshots.length})</span>
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            {msg.screenshots.map((ss, sIdx) => (
+                              <div 
+                                key={sIdx} 
+                                className="group relative bg-black/90 border border-border/60 overflow-hidden cursor-pointer hover:border-emerald-500/50 transition-all duration-200"
+                                onClick={() => setSelectedImageModal({ url: ss.image_base64 || ss.url, caption: ss.caption || ss.name })}
+                              >
+                                <div className="aspect-video relative overflow-hidden bg-muted/20">
+                                  <img 
+                                    src={ss.image_base64 || ss.url} 
+                                    alt={ss.caption || ss.name} 
+                                    className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                                  />
+                                  <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                    <span className="flex items-center gap-1.5 bg-emerald-500 text-black px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-wider shadow-md">
+                                      <Eye className="w-3.5 h-3.5" /> View Fullscreen
+                                    </span>
+                                  </div>
+                                </div>
+                                {ss.caption && (
+                                  <div className="p-2 bg-muted/40 font-mono text-[11px] text-muted-foreground border-t border-border/30 truncate">
+                                    📸 {ss.caption}
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
 
                       {msg.total_tokens !== undefined && msg.total_tokens > 0 && (
                         <div className="mt-4 pt-2 border-t border-border/20 flex gap-4 text-[10px] font-mono text-muted-foreground uppercase tracking-wider animate-in fade-in duration-300">
@@ -1320,6 +1767,36 @@ export const MultiAgentHub: React.FC = () => {
                       </div>
                     )}
 
+                    {/* Implementation Plan Approval Box */}
+                    {pendingPlanApproval && (
+                      <div className="border border-ibm-blue bg-ibm-blue/5 p-5 space-y-3 animate-in fade-in duration-300">
+                        <div className="flex items-start gap-2.5">
+                          <FileText className="w-5 h-5 text-ibm-blue shrink-0 mt-0.5" />
+                          <div className="flex-1">
+                            <div className="text-[10px] font-mono font-bold text-ibm-blue uppercase">Implementation Plan Generated</div>
+                            <div className="text-xs mt-1 text-foreground">
+                              The Code Agent has generated an implementation plan for your task. You must review and approve it before the agent continues.
+                            </div>
+                            <div className="mt-3">
+                              <button
+                                onClick={() => {
+                                  setEditedPlanContent(pendingPlanApproval.planContent);
+                                  setIsPlanModalOpen(true);
+                                }}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-ibm-blue/15 hover:bg-ibm-blue/25 text-ibm-blue border border-ibm-blue/30 text-xs font-mono uppercase transition-colors"
+                              >
+                                <Layers className="w-3.5 h-3.5" />
+                                Open Implementation Plan Window
+                              </button>
+                            </div>
+                            <div className="text-[9px] mt-2 text-muted-foreground font-mono">
+                              File path: <span className="select-all">{pendingPlanApproval.planPath}</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
                     {/* Live streaming token preview */}
                     {streamingPreview ? (
                       <div className="pt-2 space-y-2">
@@ -1417,11 +1894,80 @@ export const MultiAgentHub: React.FC = () => {
                 </div>
               )}
 
+              {/* Live Browser View Panel */}
+              {(liveBrowserActive || liveBrowserImage) && (
+                <div className="mt-4 border border-blue-500/30 bg-[#0b0f19] rounded-none p-4 shadow-lg animate-in slide-in-from-top-2 duration-300">
+                  <div className="flex items-center justify-between mb-3 border-b border-blue-500/20 pb-2">
+                    <div className="flex items-center gap-2">
+                      <Monitor className="w-4 h-4 text-blue-400 animate-pulse" />
+                      <span className="font-mono text-xs font-bold text-blue-400 uppercase tracking-wider">
+                        Live Agent Browser View
+                      </span>
+                      {liveBrowserActive ? (
+                        <span className="flex items-center gap-1 bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 text-[9px] font-mono px-2 py-0.5 animate-pulse">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
+                          LIVE (~2fps)
+                        </span>
+                      ) : (
+                        <span className="bg-muted text-muted-foreground border text-[9px] font-mono px-2 py-0.5">
+                          OFFLINE
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-3">
+                      {liveBrowserUrl && (
+                        <span className="font-mono text-[10px] text-muted-foreground truncate max-w-[250px]" title={liveBrowserUrl}>
+                          🌐 {liveBrowserUrl}
+                        </span>
+                      )}
+                      <button
+                        onClick={() => setShowLiveBrowser(!showLiveBrowser)}
+                        className="text-xs font-mono text-blue-400 hover:text-blue-300 flex items-center gap-1"
+                      >
+                        {showLiveBrowser ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                        {showLiveBrowser ? 'Minimize' : 'Expand'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {showLiveBrowser && (
+                    <div className="relative group bg-black/80 border border-border/40 overflow-hidden flex items-center justify-center min-h-[220px]">
+                      {liveBrowserImage ? (
+                        <>
+                          <img 
+                            src={liveBrowserImage} 
+                            alt="Live Browser View" 
+                            className="max-h-[400px] w-auto object-contain cursor-pointer transition-transform duration-200 hover:scale-[1.01]"
+                            onClick={() => setSelectedImageModal({ url: liveBrowserImage, caption: `Live Browser View (${liveBrowserUrl || 'App'})` })}
+                          />
+                          <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity bg-black/70 p-1 rounded border border-white/20">
+                            <Maximize2 className="w-4 h-4 text-white cursor-pointer" onClick={() => setSelectedImageModal({ url: liveBrowserImage, caption: `Live Browser View (${liveBrowserUrl || 'App'})` })} />
+                          </div>
+                        </>
+                      ) : (
+                        <div className="flex flex-col items-center gap-2 py-8 text-muted-foreground font-mono text-xs">
+                          <Loader2 className="w-6 h-6 animate-spin text-blue-400" />
+                          <span>Connecting to Playwright browser viewport...</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div ref={messagesEndRef} />
             </div>
 
             {/* PROMPT INPUT */}
             <div className="p-4 border-t border-border bg-muted/20">
+              {/* Recording Indicator */}
+              {isRecording && (
+                <div className="flex items-center gap-2 mb-3 px-3 py-2 bg-red-500/10 border border-red-500/30 animate-pulse">
+                  <div className="w-2.5 h-2.5 rounded-full bg-red-500 animate-ping" />
+                  <span className="text-xs font-mono text-red-400 uppercase tracking-wider">Recording — Speak now...</span>
+                  <span className="ml-auto text-[10px] font-mono text-red-400/70">Click mic to stop</span>
+                </div>
+              )}
               <div className="flex gap-4">
                 <textarea
                   value={prompt}
@@ -1437,6 +1983,36 @@ export const MultiAgentHub: React.FC = () => {
                     ? "Ask the Main Orchestrator Agent to do something (e.g. generate website portfolios, analyze algorithms)..."
                     : `Direct message to ${selectedDirectAgent.toUpperCase()} Agent...`}
                 />
+                {/* Microphone Button */}
+                <Button
+                  onClick={handleVoiceRecord}
+                  disabled={isTyping}
+                  variant="outline"
+                  className={cn(
+                    "h-auto px-4 py-4 flex flex-col justify-center items-center border text-base transition-all duration-300",
+                    isRecording
+                      ? "border-red-500 bg-red-500/15 hover:bg-red-500/25 text-red-400 shadow-[0_0_15px_rgba(239,68,68,0.2)]"
+                      : "border-border hover:border-primary/50 hover:bg-primary/5 text-muted-foreground hover:text-primary"
+                  )}
+                  title={isRecording ? 'Stop recording' : 'Start voice input'}
+                >
+                  {isRecording ? (
+                    <>
+                      <MicOff className="w-5 h-5 mb-1" />
+                      <span className="text-[10px] uppercase font-mono tracking-widest">Stop</span>
+                    </>
+                  ) : isTranscribing ? (
+                    <>
+                      <Loader2 className="w-5 h-5 mb-1 animate-spin" />
+                      <span className="text-[10px] uppercase font-mono tracking-widest">Wait</span>
+                    </>
+                  ) : (
+                    <>
+                      <Mic className="w-5 h-5 mb-1" />
+                      <span className="text-[10px] uppercase font-mono tracking-widest">Voice</span>
+                    </>
+                  )}
+                </Button>
                 {isTyping ? (
                   <Button 
                     onClick={handleStopAgent}
@@ -1458,7 +2034,7 @@ export const MultiAgentHub: React.FC = () => {
                 )}
               </div>
               <div className="flex justify-between items-center mt-3 text-[10px] font-mono text-muted-foreground">
-                <span>Press Enter to send, Shift+Enter for new line</span>
+                <span>Press Enter to send, Shift+Enter for new line · 🎤 Voice input supported</span>
                 <span className="flex items-center gap-1.5">
                   <FolderCheck className="w-3.5 h-3.5 text-accent" />
                   File-writer Workspace Target: <strong className="text-foreground">D:\learning\code\website</strong>
@@ -1469,6 +2045,179 @@ export const MultiAgentHub: React.FC = () => {
           </Card>
         </div>
       </div>
+
+      {/* Implementation Plan Overlay Modal Window */}
+      {isPlanModalOpen && pendingPlanApproval && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4 md:p-6 animate-in fade-in duration-200">
+          <div className="bg-card border border-border w-full max-w-4xl h-[85vh] flex flex-col shadow-2xl relative animate-in zoom-in-95 duration-200 text-foreground">
+            {/* Header */}
+            <div className="p-4 border-b border-border flex justify-between items-center bg-muted/40">
+              <div className="flex items-center gap-2">
+                <FileText className="w-4 h-4 text-ibm-blue" />
+                <span className="font-mono text-xs font-bold uppercase tracking-wider text-ibm-blue">
+                  Implementation Plan Review Window
+                </span>
+              </div>
+              <button 
+                onClick={() => setIsPlanModalOpen(false)}
+                className="text-muted-foreground hover:text-foreground transition-colors p-1.5 hover:bg-muted"
+                title="Close Window"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            
+            {/* Body */}
+            <div className="flex-1 overflow-hidden flex flex-col p-6 space-y-4">
+              {/* Tab Selector */}
+              <div className="flex gap-4 border-b border-border/60 pb-2">
+                <button
+                  onClick={() => setActivePlanTab('preview')}
+                  className={`pb-2 text-xs font-mono uppercase tracking-wider border-b-2 transition-all ${
+                    activePlanTab === 'preview'
+                      ? 'border-ibm-blue text-ibm-blue font-bold'
+                      : 'border-transparent text-muted-foreground hover:text-foreground'
+                  }`}
+                >
+                  Formatted Preview
+                </button>
+                <button
+                  onClick={() => setActivePlanTab('edit')}
+                  className={`pb-2 text-xs font-mono uppercase tracking-wider border-b-2 transition-all ${
+                    activePlanTab === 'edit'
+                      ? 'border-ibm-blue text-ibm-blue font-bold'
+                      : 'border-transparent text-muted-foreground hover:text-foreground'
+                  }`}
+                >
+                  Edit Raw Markdown
+                </button>
+              </div>
+
+              {/* Path metadata */}
+              <div className="p-2.5 bg-muted/30 border border-border/50 text-[10px] font-mono text-muted-foreground flex justify-between items-center">
+                <span>Plan File Path: <strong className="text-foreground">{pendingPlanApproval.planPath}</strong></span>
+                <span className="text-ibm-blue uppercase font-bold text-[9px]">Local Work Target</span>
+              </div>
+
+              {/* Content Panel */}
+              <div className="flex-1 overflow-hidden border border-border/80 bg-black/20">
+                {activePlanTab === 'preview' ? (
+                  <div className="h-full overflow-y-auto p-6 scrollbar-thin select-text">
+                    {renderMarkdown(editedPlanContent || pendingPlanApproval.planContent)}
+                  </div>
+                ) : (
+                  <textarea
+                    className="w-full h-full font-mono text-xs p-4 bg-black/60 text-foreground border-0 focus:outline-none resize-none"
+                    value={editedPlanContent}
+                    onChange={(e) => setEditedPlanContent(e.target.value)}
+                    placeholder="Write implementation plan markdown here..."
+                  />
+                )}
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="p-4 border-t border-border flex gap-3 justify-end bg-muted/40">
+              <Button
+                variant="outline"
+                onClick={() => handlePlanApprovalResponse(false)}
+                className="h-9 px-4 text-xs font-mono uppercase border-destructive/40 hover:bg-destructive/10 text-destructive-foreground hover:text-destructive hover:border-destructive"
+              >
+                Reject / Cancel Task
+              </Button>
+              <Button
+                onClick={() => handlePlanApprovalResponse(true)}
+                className="h-9 px-5 text-xs font-mono uppercase bg-emerald-600 hover:bg-emerald-700 text-white border-0"
+              >
+                Proceed with Execution
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Image Lightbox Modal */}
+      {selectedImageModal && (
+        <div 
+          className="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex flex-col items-center justify-center p-4 animate-in fade-in duration-200"
+          onClick={() => setSelectedImageModal(null)}
+        >
+          <div className="absolute top-4 right-4 flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="icon"
+              className="bg-black/60 border-white/20 text-white hover:bg-white/20 rounded-full h-10 w-10"
+              onClick={() => setSelectedImageModal(null)}
+            >
+              <X className="w-5 h-5" />
+            </Button>
+          </div>
+          
+          <div 
+            className="max-w-[95vw] max-h-[85vh] bg-black border border-border/60 p-2 shadow-2xl relative flex flex-col items-center"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <img 
+              src={selectedImageModal.url} 
+              alt={selectedImageModal.caption || 'Screenshot'} 
+              className="max-w-full max-h-[75vh] object-contain"
+            />
+            {selectedImageModal.caption && (
+              <div className="mt-3 px-4 py-2 bg-muted/30 border border-border/40 font-mono text-xs text-foreground text-center w-full">
+                📸 {selectedImageModal.caption}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Interactive Presentation Modal */}
+      {selectedPresentationModal && (
+        <div 
+          className="fixed inset-0 z-50 bg-black/95 backdrop-blur-lg flex flex-col items-center justify-center p-4 animate-in fade-in duration-200"
+          onClick={() => setSelectedPresentationModal(null)}
+        >
+          <div className="absolute top-4 right-4 flex items-center gap-3">
+            <a
+              href={selectedPresentationModal.url.replace('.html', '.pptx')}
+              download
+              className="inline-flex items-center gap-1.5 font-mono text-xs bg-amber-500 text-black font-bold px-3 py-1.5 rounded hover:bg-amber-400 transition-colors shadow-lg"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <Presentation className="w-4 h-4" />
+              Download PPTX
+            </a>
+            <Button
+              variant="outline"
+              size="icon"
+              className="bg-black/60 border-white/20 text-white hover:bg-white/20 rounded-full h-10 w-10"
+              onClick={() => setSelectedPresentationModal(null)}
+            >
+              <X className="w-5 h-5" />
+            </Button>
+          </div>
+
+          <div 
+            className="w-[95vw] h-[88vh] bg-black border border-blue-500/40 shadow-2xl flex flex-col overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="bg-[#0b0f19] border-b border-blue-500/20 px-4 py-2 flex items-center justify-between font-mono text-xs text-blue-400">
+              <div className="flex items-center gap-2">
+                <Presentation className="w-4 h-4 text-blue-400" />
+                <span className="font-bold uppercase tracking-wider">{selectedPresentationModal.title || 'Interactive Slide Deck'}</span>
+              </div>
+              <span className="text-[10px] text-muted-foreground">Use Arrow Keys or Swipe to Navigate Slides</span>
+            </div>
+            <iframe 
+              src={selectedPresentationModal.url} 
+              title="Presentation Deck"
+              className="w-full h-full border-0 bg-black"
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 };

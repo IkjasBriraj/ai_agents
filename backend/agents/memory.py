@@ -76,12 +76,25 @@ class MultiAgentMemory:
         messages = self.get_messages(session_id)
         if not messages:
             return ""
-            
+
         formatted = []
         for msg in messages:
             role = "User" if isinstance(msg, HumanMessage) else "Assistant"
             formatted.append(f"{role}: {msg.content}")
         return "\n".join(formatted)
+
+    def get_semantic_context(self, query: str) -> str:
+        """Retrieve semantically relevant context from the local vector store."""
+        try:
+            from .vector_store import OllamaEmbeddings, LocalVectorStore, query_workspace
+            from .config import DEFAULT_MAIN_MODEL
+
+            embedder = OllamaEmbeddings(model_name=DEFAULT_MAIN_MODEL)
+            store = LocalVectorStore()
+            return query_workspace(query, embedder, store)
+        except Exception as e:
+            print(f"Error retrieving semantic context: {e}")
+            return ""
 
 
 # Global instance of multi-agent memory

@@ -130,8 +130,13 @@ venv.bak/
 .venv.bak/
 
 # Database files
+*.db
 *.db-shm
 *.db-wal
+
+# Generated Documents & Screenshots
+_documents/
+_screenshots/
 
 # Build files
 dist/
