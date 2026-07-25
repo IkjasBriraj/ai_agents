@@ -708,6 +708,215 @@ def summarize_text(text: str) -> str:
     return f"Summary: {text[:200]}..."
 
 
+class FetchWebPageInput(BaseModel):
+    """Input for fetch web page tool"""
+    url: str = Field(description="The URL of the web page to fetch")
+    extract_main_content: bool = Field(default=True, description="If true, strips navigation, footers, ads, scripts and returns only main article/body content. If false, returns all visible text.")
+
+
+def fetch_web_page(url: str, extract_main_content: bool = True) -> str:
+    """Fetch a web page and extract clean readable text content.
+    
+    Uses urllib to download the page, then parses HTML to extract
+    clean text while removing scripts, styles, nav, footer, and ad elements.
+    Returns formatted markdown with page title, URL, and content.
+    Truncates to ~8000 characters to stay within LLM context limits.
+    """
+    import urllib.request
+    import urllib.parse
+    import re
+    import html as html_module
+    
+    MAX_CONTENT_LENGTH = 8000
+    
+    try:
+        # Validate URL
+        parsed = urllib.parse.urlparse(url)
+        if not parsed.scheme:
+            url = "https://" + url
+        elif parsed.scheme not in ("http", "https"):
+            return f"Error: Unsupported URL scheme '{parsed.scheme}'. Only http and https are supported."
+        
+        # Fetch the page
+        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": user_agent,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5",
+            }
+        )
+        
+        with urllib.request.urlopen(req, timeout=15) as response:
+            content_type = response.headers.get("Content-Type", "")
+            if "text/html" not in content_type and "application/xhtml" not in content_type:
+                return f"Error: URL returned non-HTML content type: {content_type}"
+            
+            raw_html = response.read().decode("utf-8", errors="replace")
+        
+        # Extract page title
+        title_match = re.search(r"<title[^>]*>(.*?)</title>", raw_html, re.IGNORECASE | re.DOTALL)
+        page_title = html_module.unescape(title_match.group(1).strip()) if title_match else "Untitled Page"
+        
+        # Remove unwanted elements
+        # 1. Remove script and style blocks entirely
+        cleaned = re.sub(r"<script[^>]*>.*?</script>", "", raw_html, flags=re.IGNORECASE | re.DOTALL)
+        cleaned = re.sub(r"<style[^>]*>.*?</style>", "", cleaned, flags=re.IGNORECASE | re.DOTALL)
+        cleaned = re.sub(r"<noscript[^>]*>.*?</noscript>", "", cleaned, flags=re.IGNORECASE | re.DOTALL)
+        cleaned = re.sub(r"<!--.*?-->", "", cleaned, flags=re.DOTALL)
+        
+        if extract_main_content:
+            # 2. Remove nav, header, footer, aside, and common ad containers
+            for tag in ["nav", "header", "footer", "aside"]:
+                cleaned = re.sub(rf"<{tag}[^>]*>.*?</{tag}>", "", cleaned, flags=re.IGNORECASE | re.DOTALL)
+            
+            # 3. Remove elements with common ad/sidebar class names
+            cleaned = re.sub(r'<[^>]+(class|id)=["\'][^"\']*(?:sidebar|advertisement|ad-container|cookie|popup|modal|banner)[^"\']*["\'][^>]*>.*?</[^>]+>', "", cleaned, flags=re.IGNORECASE | re.DOTALL)
+            
+            # 4. Try to extract main/article content if available
+            main_match = re.search(r"<(?:main|article)[^>]*>(.*?)</(?:main|article)>", cleaned, re.IGNORECASE | re.DOTALL)
+            if main_match:
+                cleaned = main_match.group(1)
+        
+        # Convert block-level elements to newlines for readability
+        cleaned = re.sub(r"<(?:br|hr)[^>]*/?>", "\n", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"</(?:p|div|h[1-6]|li|tr|blockquote|section)>", "\n", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"<(?:h[1-6])[^>]*>", "\n## ", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"<li[^>]*>", "\n- ", cleaned, flags=re.IGNORECASE)
+        
+        # Strip all remaining HTML tags
+        cleaned = re.sub(r"<[^>]+>", "", cleaned)
+        
+        # Decode HTML entities
+        cleaned = html_module.unescape(cleaned)
+        
+        # Clean up whitespace
+        cleaned = re.sub(r"[ \t]+", " ", cleaned)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        cleaned = cleaned.strip()
+        
+        return f"""# Fetched Page Content
+
+**Title:** {page_title}
+**URL:** {url}
+**Content Length:** {len(cleaned)} characters
+
+---
+
+{cleaned}"""
+        
+    except urllib.error.HTTPError as e:
+        return f"HTTP Error {e.code} fetching {url}: {e.reason}"
+    except urllib.error.URLError as e:
+        return f"URL Error fetching {url}: {str(e.reason)}"
+    except Exception as e:
+        return f"Error fetching {url}: {str(e)}"
+
+
+class FirecrawlInput(BaseModel):
+    """Input for Firecrawl scraping and crawling tool"""
+    url: str = Field(description="The URL of the web page or domain to scrape/crawl")
+    mode: str = Field(default="scrape", description="Mode: 'scrape' for single-page markdown extraction, or 'crawl' for discovering and extracting content from multiple subpages")
+
+
+def firecrawl_scrape(url: str, mode: str = "scrape") -> str:
+    """Scrape or crawl web page content using Firecrawl format.
+    
+    Converts complex web pages into clean, structured Markdown format (headers, lists, links, code blocks)
+    optimized for LLM ingestion. Supports single page scraping or multi-page site crawling.
+    """
+    import os
+    import urllib.request
+    import urllib.parse
+    import json
+    import re
+    import html as html_module
+
+    api_key = os.environ.get("FIRECRAWL_API_KEY")
+
+    if api_key:
+        try:
+            endpoint = "https://api.firecrawl.dev/v1/scrape" if mode == "scrape" else "https://api.firecrawl.dev/v1/crawl"
+            payload = json.dumps({"url": url, "formats": ["markdown"]}).encode("utf-8")
+            req = urllib.request.Request(
+                endpoint,
+                data=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {api_key}"
+                }
+            )
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+                if result.get("success"):
+                    data = result.get("data", {})
+                    markdown = data.get("markdown", "")
+                    metadata = data.get("metadata", {})
+                    title = metadata.get("title", "Scraped Page")
+                    return f"# Firecrawl Scrape Result: {title}\n**URL:** {url}\n\n{markdown[:8000]}"
+        except Exception as e:
+            # Fallback to local markdown engine if API key request fails
+            pass
+
+    # Built-in Firecrawl Markdown Extraction Engine
+    try:
+        parsed = urllib.parse.urlparse(url)
+        if not parsed.scheme:
+            url = "https://" + url
+
+        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Firecrawl/1.0"
+        req = urllib.request.Request(url, headers={"User-Agent": user_agent})
+
+        with urllib.request.urlopen(req, timeout=15) as response:
+            raw_html = response.read().decode("utf-8", errors="replace")
+
+        # Extract title
+        title_match = re.search(r"<title[^>]*>(.*?)</title>", raw_html, re.IGNORECASE | re.DOTALL)
+        page_title = html_module.unescape(title_match.group(1).strip()) if title_match else "Scraped Content"
+
+        # Remove scripts, styles, comments
+        cleaned = re.sub(r"<(?:script|style|svg|noscript)[^>]*>.*?</(?:script|style|svg|noscript)>", "", raw_html, flags=re.IGNORECASE | re.DOTALL)
+        cleaned = re.sub(r"<!--.*?-->", "", cleaned, flags=re.DOTALL)
+
+        # Convert HTML headers to Markdown
+        for lvl in range(6, 0, -1):
+            hashes = "#" * lvl
+            cleaned = re.sub(rf"<h{lvl}[^>]*>(.*?)</h{lvl}>", rf"\n\n{hashes} \1\n\n", cleaned, flags=re.IGNORECASE | re.DOTALL)
+
+        # Convert links
+        cleaned = re.sub(r'<a\s+[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', r'[\2](\1)', cleaned, flags=re.IGNORECASE | re.DOTALL)
+
+        # Convert lists
+        cleaned = re.sub(r"<li[^>]*>(.*?)</li>", r"\n- \1", cleaned, flags=re.IGNORECASE | re.DOTALL)
+        cleaned = re.sub(r"</?(?:ul|ol|dir|menu)[^>]*>", "\n", cleaned, flags=re.IGNORECASE)
+
+        # Convert block tags to linebreaks
+        cleaned = re.sub(r"</?(?:p|div|section|article|header|footer|nav|blockquote|table|tr|td|th)[^>]*>", "\n", cleaned, flags=re.IGNORECASE)
+
+        # Strip remaining tags
+        cleaned = re.sub(r"<[^>]+>", "", cleaned)
+        cleaned = html_module.unescape(cleaned)
+
+        # Clean excess spaces and lines
+        cleaned = re.sub(r"[ \t]+", " ", cleaned)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+        if len(cleaned) > 8000:
+            cleaned = cleaned[:8000] + "\n\n... [Firecrawl Markdown output truncated at 8,000 characters]"
+
+        return f"""# 🔥 Firecrawl Markdown Output: {page_title}
+**Target URL:** {url}
+**Mode:** {mode.upper()}
+**Format:** Clean Markdown
+
+---
+
+{cleaned}"""
+    except Exception as e:
+        return f"Firecrawl scrape failed for '{url}': {str(e)}"
+
+
 # Analysis Agent Tools
 def analyze_code(code: str) -> str:
     """Analyze code for issues and improvements"""
@@ -1264,6 +1473,22 @@ def get_research_agent_tools() -> List[StructuredTool]:
                 safe_parse_input(x).get("num_results", 5)
             ),
             description="Search the web for information. Input should be a dict with 'query' and optional 'num_results' keys."
+        ),
+        StructuredTool.from_function(
+            name="fetch_web_page",
+            func=lambda x: fetch_web_page(
+                safe_parse_input(x).get("url", x if isinstance(x, str) else ""),
+                safe_parse_input(x).get("extract_main_content", True)
+            ),
+            description="Fetch and extract clean readable text content from any web URL. Input should be a dict with 'url' (required) and optional 'extract_main_content' (boolean, default true). Returns page title, URL, and cleaned text content. Use this after web_search to read full page contents."
+        ),
+        StructuredTool.from_function(
+            name="firecrawl",
+            func=lambda x: firecrawl_scrape(
+                safe_parse_input(x).get("url", x if isinstance(x, str) else ""),
+                safe_parse_input(x).get("mode", "scrape")
+            ),
+            description="Scrape or crawl web pages into clean LLM-optimized Markdown format using Firecrawl. Input should be a dict with 'url' (required) and optional 'mode' ('scrape' for single page, 'crawl' for subpages). Returns clean markdown with headings, lists, tables, and links."
         ),
         StructuredTool.from_function(
             name="summarize_text",

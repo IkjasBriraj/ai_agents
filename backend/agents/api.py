@@ -58,6 +58,7 @@ class MultiAgentRequest(BaseModel):
     context: Optional[Dict[str, Any]] = Field(default=None, description="Optional context")
     stream: bool = Field(default=False, description="Enable streaming response")
     session_id: Optional[str] = Field(default="default", description="Session ID for agent memory")
+    thinking_level: Optional[str] = Field(default="medium", description="Thinking level: low, medium, high, or extended")
 
 
 class DirectAgentRequest(BaseModel):
@@ -66,6 +67,7 @@ class DirectAgentRequest(BaseModel):
     task: str = Field(..., description="Task for the agent")
     context: Optional[Dict[str, Any]] = Field(default=None, description="Optional context")
     session_id: Optional[str] = Field(default="default", description="Session ID for agent memory")
+    thinking_level: Optional[str] = Field(default="medium", description="Thinking level: low, medium, high, or extended")
 
 
 class AgentResponse(BaseModel):
@@ -174,12 +176,16 @@ def create_multi_agent_router(
         """
         try:
             session_id = request.session_id or "default"
+            ctx = dict(request.context or {})
+            if request.thinking_level:
+                ctx["thinking_level"] = request.thinking_level
+
             if request.stream:
                 # Return streaming response
                 async def generate():
                     async for chunk in orchestrator.process_request_stream(
                         request.prompt,
-                        request.context,
+                        ctx,
                         session_id=session_id
                     ):
                         yield f"data: {json.dumps(chunk)}\n\n"
@@ -195,7 +201,7 @@ def create_multi_agent_router(
                 )
             else:
                 # Return complete response
-                result = await asyncio.to_thread(orchestrator.process_request, request.prompt, request.context, session_id=session_id)
+                result = await asyncio.to_thread(orchestrator.process_request, request.prompt, ctx, session_id=session_id)
                 return AgentResponse(**result)
                 
         except Exception as e:

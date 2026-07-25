@@ -16,6 +16,8 @@ import {
   Info,
   CheckCircle2
 } from 'lucide-react';
+import { AnimationSelector } from './AnimationSelector';
+import { ThinkingLevelSelector } from './ThinkingLevelSelector';
 import { cn } from '@/lib/utils';
 
 interface AgentTools {
@@ -205,6 +207,12 @@ export const MultiAgentConfig: React.FC = () => {
   return (
     <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-500 pb-20">
       
+      {/* 0. Animation Engine Selector (Liquid Agentic Core vs Slime AI Companion) */}
+      <AnimationSelector variant="full" />
+
+      {/* 0b. Claude Code Style Thinking Level & Reasoning Budget */}
+      <ThinkingLevelSelector variant="full" />
+
       {/* Dynamic Status Banner */}
       {statusMessage && (
         <div className={cn(

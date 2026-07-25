@@ -78,11 +78,12 @@ export const OllamaService = {
     return response.data;
   },
 
-  async chatDirectAgent(agentType: string, task: string, context?: any): Promise<any> {
+  async chatDirectAgent(agentType: string, task: string, context?: any, thinkingLevel?: string): Promise<any> {
     const response = await axios.post(`${API_BASE}/api/multi-agent/agents/direct/${agentType}`, {
       agent_type: agentType,
       task,
-      context
+      context,
+      thinking_level: thinkingLevel || 'medium'
     });
     return response.data;
   },
@@ -91,7 +92,8 @@ export const OllamaService = {
     prompt: string,
     onEvent: (event: { type: string; agent?: string; content?: string; done: boolean }) => void,
     onError: (err: any) => void,
-    context?: any
+    context?: any,
+    thinkingLevel?: string
   ): Promise<AbortController> {
     const controller = new AbortController();
     
@@ -103,7 +105,8 @@ export const OllamaService = {
       body: JSON.stringify({
         prompt,
         context,
-        stream: true
+        stream: true,
+        thinking_level: thinkingLevel || 'medium'
       }),
       signal: controller.signal
     })

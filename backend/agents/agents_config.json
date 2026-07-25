@@ -16,6 +16,8 @@
     ],
     "research": [
       "web_search",
+      "fetch_web_page",
+      "firecrawl",
       "summarize_text"
     ],
     "analysis": [
@@ -41,7 +43,9 @@
   "allowed_commands": [
     "mkdir -p D:\\learning\\code\\website\\css D:\\learning\\code\\website\\js D:\\learning\\code\\website\\assets\\img D:\\learning\\code\\website\\assets\\icons",
     "mkdir -p D:\\learning\\code\\website\\css D:\\learning\\code\\website\\js D:\\learning\\code\\website\\assets",
-    "pip install pandas openpyxl python-pptx"
+    "pip install pandas openpyxl python-pptx",
+    "mkdir -p siri_clone/js",
+    "mkdir -p D:\\learning\\code\\website\\minecraft_2d\\src"
   ],
   "default_main_model": "gemma4:26b",
   "default_code_model": "gemma4:26b"

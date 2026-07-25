@@ -1,0 +1,128 @@
+/* Siri Liquid Fluid Animation Styles & Shaders */
+
+@keyframes siri-rotate {
+  0% {
+    transform: rotate(0deg) scale(1);
+  }
+  50% {
+    transform: rotate(180deg) scale(1.08);
+  }
+  100% {
+    transform: rotate(360deg) scale(1);
+  }
+}
+
+@keyframes siri-pulse-fluid {
+  0%, 100% {
+    border-radius: 42% 58% 70% 30% / 45% 45% 55% 55%;
+    transform: scale(1) rotate(0deg);
+  }
+  33% {
+    border-radius: 70% 30% 46% 54% / 30% 60% 40% 70%;
+    transform: scale(1.05) rotate(120deg);
+  }
+  66% {
+    border-radius: 38% 62% 63% 37% / 70% 33% 67% 30%;
+    transform: scale(0.95) rotate(240deg);
+  }
+}
+
+@keyframes siri-liquid-flow {
+  0% {
+    background-position: 0% 50%;
+    filter: hue-rotate(0deg) brightness(1.1);
+  }
+  50% {
+    background-position: 100% 50%;
+    filter: hue-rotate(90deg) brightness(1.3);
+  }
+  100% {
+    background-position: 0% 50%;
+    filter: hue-rotate(0deg) brightness(1.1);
+  }
+}
+
+@keyframes siri-border-glow {
+  0%, 100% {
+    box-shadow: 
+      0 0 15px rgba(168, 85, 247, 0.4),
+      0 0 30px rgba(59, 130, 246, 0.3),
+      inset 0 0 15px rgba(236, 72, 153, 0.3);
+  }
+  50% {
+    box-shadow: 
+      0 0 25px rgba(236, 72, 153, 0.6),
+      0 0 45px rgba(168, 85, 247, 0.5),
+      inset 0 0 25px rgba(59, 130, 246, 0.5);
+  }
+}
+
+.siri-orb-base {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  backdrop-filter: blur(12px) saturate(180%);
+  -webkit-backdrop-filter: blur(12px) saturate(180%);
+  box-shadow: 
+    0 8px 32px 0 rgba(0, 0, 0, 0.36),
+    inset 0 0 15px 0 rgba(255, 255, 255, 0.4),
+    inset 0 -10px 20px 0 rgba(0, 0, 0, 0.5);
+}
+
+.siri-fluid-layer {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at 30% 30%,
+    rgba(236, 72, 153, 0.95) 0%,
+    rgba(168, 85, 247, 0.85) 25%,
+    rgba(59, 130, 246, 0.8) 50%,
+    rgba(6, 182, 212, 0.75) 75%,
+    rgba(16, 185, 129, 0.6) 100%
+  );
+  background-size: 200% 200%;
+  animation: siri-pulse-fluid 6s ease-in-out infinite, siri-liquid-flow 8s ease infinite;
+  mix-blend-mode: screen;
+}
+
+.siri-fluid-glow-backdrop {
+  position: absolute;
+  inset: -20%;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    rgba(236, 72, 153, 0.5) 0%,
+    rgba(168, 85, 247, 0.4) 40%,
+    rgba(59, 130, 246, 0.3) 70%,
+    transparent 100%
+  );
+  filter: blur(8px);
+  animation: siri-rotate 10s linear infinite;
+  pointer-events: none;
+}
+
+.siri-fluid-border-frame {
+  position: relative;
+}
+
+.siri-fluid-border-frame::before {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: inherit;
+  padding: 3px;
+  background: linear-gradient(
+    135deg,
+    #ec4899, #a855f7, #3b82f6, #06b6d4, #10b981, #f59e0b, #ec4899
+  );
+  background-size: 400% 400%;
+  animation: siri-liquid-flow 4s ease infinite;
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}

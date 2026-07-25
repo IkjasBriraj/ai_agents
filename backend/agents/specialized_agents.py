@@ -127,7 +127,8 @@ class RobustReActParser(ReActSingleInputOutputParser):
             if action_input.endswith("```"):
                 action_input = action_input[:-3]
 
-            action_input = action_input.strip('"').strip("'").strip()
+            if (action_input.startswith('"') and action_input.endswith('"')) or (action_input.startswith("'") and action_input.endswith("'")):
+                action_input = action_input[1:-1].strip()
             
             # Anti-loop check
             action_key = f"{action}:{action_input}"
@@ -219,13 +220,21 @@ class ThreadSafeAgentCallbackHandler(BaseCallbackHandler):
                 self.buffer += token
                 self._put_event({"type": "thinking", "content": token})
                 buffer_lower = self.buffer.lower()
-                match = re.search(r'(final answer|final response|answer):\s*', buffer_lower)
-                if match:
-                    idx = match.start()
-                    after_final = self.buffer[idx + len(match.group(0)):].lstrip()
-                    if after_final:
-                        self._put_event({"type": "token", "content": after_final})
-                    self.final_answer_started = True
+                
+                # Flexible pattern matching for final answer transition
+                patterns = [
+                    r'(final answer|final response|answer|summary|conclusion|findings|recommendation|results):\s*',
+                    r'(here is|here are|based on the research|in summary|to summarize|overall,):\s*'
+                ]
+                for p in patterns:
+                    match = re.search(p, buffer_lower)
+                    if match:
+                        idx = match.start()
+                        after_final = self.buffer[idx + len(match.group(0)):].lstrip()
+                        if after_final:
+                            self._put_event({"type": "token", "content": after_final})
+                        self.final_answer_started = True
+                        break
 
     def on_agent_action(self, action: AgentAction, **kwargs) -> None:
         self._check_cancellation()
@@ -244,8 +253,12 @@ class ThreadSafeAgentCallbackHandler(BaseCallbackHandler):
 
     def on_agent_finish(self, finish: AgentFinish, **kwargs) -> None:
         self._check_cancellation()
+        output_text = finish.return_values.get("output", "") if hasattr(finish, "return_values") and finish.return_values else ""
+        if not output_text:
+            output_text = str(finish)
+
         if not self.final_answer_started and self.agent_type != "general":
-            self._put_event({"type": "token", "content": finish.return_values.get("output", "")})
+            self._put_event({"type": "token", "content": output_text})
             self.final_answer_started = True
 
 
@@ -388,9 +401,21 @@ Thought: {{agent_scratchpad}}"""
                 })
 
             if context:
-                clean_context = {k: v for k, v in context.items() if k not in ["queue", "loop"]}
+                clean_context = {k: v for k, v in context.items() if k not in ["queue", "loop", "session_id"]}
+                thinking_level = str(clean_context.pop("thinking_level", "medium")).lower()
+                
+                thinking_mode_directives = {
+                    "low": "[SYSTEM DIRECTIVE - THINKING MODE: LOW. You are currently operating in LOW THINKING MODE. Do not perform extended thinking or decision trees. Do not generate long thought breakdowns. Respond directly, concisely, and execute tools immediately.]",
+                    "medium": "[SYSTEM DIRECTIVE - THINKING MODE: MEDIUM. You are currently operating in MEDIUM THINKING MODE. Perform balanced step-by-step reasoning and tool plan verification before executing tools.]",
+                    "high": "[SYSTEM DIRECTIVE - THINKING MODE: HIGH. You are currently operating in HIGH THINKING MODE. Perform deep reasoning, multi-layer verification, edge-case analysis, and code safety checks before generating output.]",
+                    "extended": "[SYSTEM DIRECTIVE - THINKING MODE: EXTENDED. You are currently operating in EXTENDED THINKING MODE (Claude Code Style). You MUST perform deep, exhaustive architectural thinking, multi-layer verification, and emit a detailed <thinking> ... </thinking> reasoning breakdown evaluating design options, code safety, edge cases, and step-by-step execution strategy before presenting your answer.]"
+                }
+                directive = thinking_mode_directives.get(thinking_level, thinking_mode_directives["medium"])
+                if directive not in task:
+                    task = f"{directive}\n\n{task}"
+                
                 if clean_context:
-                    task = f"{task}\n\nContext: {clean_context}"
+                    task = f"{task}\n\nContext Details: {clean_context}"
 
             formatted_history = ""
             if chat_history:

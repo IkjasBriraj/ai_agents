@@ -162,81 +162,87 @@ If the request is general or conversational, respond with "general"."""
         """Analyze the user request and determine which agent to use"""
         user_request = state["user_request"]
         session_id = state.get("session_id", "default")
+        context = state.get("context") or {}
 
-        # Quick keyword-based pre-check for analyze_and_fix patterns
-        request_lower = user_request.lower()
-        fix_keywords = [
-            "fix error", "fix bug", "fix the error", "fix the bug", "debug and fix",
-            "find and fix", "analyze and fix", "fix issues in", "fix this file",
-            "fix errors in", "fix bugs in", "correct the errors", "fix issue in",
-            "fix the issue in", "getting this error", "getting an error", "got this error",
-            "error is", "solve the error", "resolve the error", "fix it"
-        ]
-
-        is_fix_request = any(kw in request_lower for kw in fix_keywords)
-
-        # Quick keyword-based pre-check for terminal/run/schedule patterns
-        terminal_keywords = [
-            "run the app", "run my app", "run this app", "start the server",
-            "npm run", "npm start", "npm install", "pip install", "python run",
-            "run the command", "execute command", "run command", "terminal",
-            "start the app", "launch the app", "run it"
-        ]
-        schedule_keywords = [
-            "schedule", "every day", "every hour", "every minute", "periodically",
-            "check every", "loop", "timer", "remind me", "tomorrow morning",
-            "in the morning", "recurring", "repeat every"
-        ]
-
-        is_terminal_request = any(kw in request_lower for kw in terminal_keywords)
-        is_schedule_request = any(kw in request_lower for kw in schedule_keywords)
-
-        # Quick keyword-based pre-check for business patterns
-        business_keywords = [
-            "csv", "spreadsheet", "excel", "financial", "business plan",
-            "business strategy", "revenue", "profit", "budget", "market analysis",
-            "forecast", "financial model", "cash flow", "balance sheet",
-            "csv_sheet_operation", "financial report", "sales analysis",
-            "presentation", "ppt", "powerpoint", "slides", "pitch deck", "slide deck", "deck"
-        ]
-        is_business_request = any(kw in request_lower for kw in business_keywords)
-
-        if is_fix_request:
-            selected_agent = "analyze_and_fix"
-        elif is_business_request:
-            selected_agent = "business"
-        elif is_terminal_request or is_schedule_request:
-            selected_agent = "code"
+        # Direct agent override
+        direct_agent = context.get("direct_agent")
+        if direct_agent and direct_agent in ["research", "business", "code", "analysis", "analyze_and_fix", "general"]:
+            selected_agent = direct_agent
         else:
-            # Format and inject history for routing context
-            history_str = multi_agent_memory.format_history(session_id)
-            history_prompt = ""
-            if history_str:
-                history_prompt = f"\n\nConversation History:\n{history_str}"
-
-            # Inject semantic workspace context
-            semantic_context = multi_agent_memory.get_semantic_context(user_request)
-            semantic_prompt = ""
-            if semantic_context:
-                semantic_prompt = f"\n\nRelevant Workspace Context:\n{semantic_context}"
-
-            # Build prompt for agent selection
-            messages = [
-                SystemMessage(content=self.system_prompt + history_prompt + semantic_prompt),
-                HumanMessage(content=f"User request: {user_request}\n\nWhich agent should handle this? Respond with ONLY ONE of: code, research, analysis, business, analyze_and_fix, general")
+            # Quick keyword-based pre-check for analyze_and_fix patterns
+            request_lower = user_request.lower()
+            fix_keywords = [
+                "fix error", "fix bug", "fix the error", "fix the bug", "debug and fix",
+                "find and fix", "analyze and fix", "fix issues in", "fix this file",
+                "fix errors in", "fix bugs in", "correct the errors", "fix issue in",
+                "fix the issue in", "getting this error", "getting an error", "got this error",
+                "error is", "solve the error", "resolve the error", "fix it"
             ]
 
-            # Get LLM response
-            response = self.llm.invoke(messages)
-            selected_agent = response.content.strip().lower()
+            is_fix_request = any(kw in request_lower for kw in fix_keywords)
 
-            # Clean up the response - extract just the agent name
-            for valid_agent in ["analyze_and_fix", "business", "code", "research", "analysis", "general"]:
-                if valid_agent in selected_agent:
-                    selected_agent = valid_agent
-                    break
+            # Quick keyword-based pre-check for terminal/run/schedule patterns
+            terminal_keywords = [
+                "run the app", "run my app", "run this app", "start the server",
+                "npm run", "npm start", "npm install", "pip install", "python run",
+                "run the command", "execute command", "run command", "terminal",
+                "start the app", "launch the app", "run it"
+            ]
+            schedule_keywords = [
+                "schedule", "every day", "every hour", "every minute", "periodically",
+                "check every", "loop", "timer", "remind me", "tomorrow morning",
+                "in the morning", "recurring", "repeat every"
+            ]
+
+            is_terminal_request = any(kw in request_lower for kw in terminal_keywords)
+            is_schedule_request = any(kw in request_lower for kw in schedule_keywords)
+
+            # Quick keyword-based pre-check for business patterns
+            business_keywords = [
+                "csv", "spreadsheet", "excel", "financial", "business plan",
+                "business strategy", "revenue", "profit", "budget", "market analysis",
+                "forecast", "financial model", "cash flow", "balance sheet",
+                "csv_sheet_operation", "financial report", "sales analysis",
+                "presentation", "ppt", "powerpoint", "slides", "pitch deck", "slide deck", "deck"
+            ]
+            is_business_request = any(kw in request_lower for kw in business_keywords)
+
+            if is_fix_request:
+                selected_agent = "analyze_and_fix"
+            elif is_business_request:
+                selected_agent = "business"
+            elif is_terminal_request or is_schedule_request:
+                selected_agent = "code"
             else:
-                selected_agent = "general"
+                # Format and inject history for routing context
+                history_str = multi_agent_memory.format_history(session_id)
+                history_prompt = ""
+                if history_str:
+                    history_prompt = f"\n\nConversation History:\n{history_str}"
+
+                # Inject semantic workspace context
+                semantic_context = multi_agent_memory.get_semantic_context(user_request)
+                semantic_prompt = ""
+                if semantic_context:
+                    semantic_prompt = f"\n\nRelevant Workspace Context:\n{semantic_context}"
+
+                # Build prompt for agent selection
+                messages = [
+                    SystemMessage(content=self.system_prompt + history_prompt + semantic_prompt),
+                    HumanMessage(content=f"User request: {user_request}\n\nWhich agent should handle this? Respond with ONLY ONE of: code, research, analysis, business, analyze_and_fix, general")
+                ]
+
+                # Get LLM response
+                response = self.llm.invoke(messages)
+                selected_agent = response.content.strip().lower()
+
+                # Clean up the response - extract just the agent name
+                for valid_agent in ["analyze_and_fix", "business", "code", "research", "analysis", "general"]:
+                    if valid_agent in selected_agent:
+                        selected_agent = valid_agent
+                        break
+                else:
+                    selected_agent = "general"
 
         # Inject prompt guidelines for file creation/update
         if selected_agent in ["code", "analyze_and_fix"]:
@@ -274,6 +280,19 @@ If the request is general or conversational, respond with "general"."""
         callbacks = []
         context = dict(state.get("context") or {})
         context["session_id"] = session_id
+
+        # Inject thinking level directive (Claude Code style System Prompt)
+        thinking_level = context.get("thinking_level", "medium").lower()
+        thinking_directives = {
+            "low": "\n\n[SYSTEM DIRECTIVE - THINKING MODE: LOW. You are currently operating in LOW THINKING MODE. Do not perform extended thinking or lengthy step-by-step reasoning. Do not generate thought breakdowns. Respond directly, concisely, and execute tools immediately.]",
+            "medium": "\n\n[SYSTEM DIRECTIVE - THINKING MODE: MEDIUM. You are currently operating in MEDIUM THINKING MODE. Perform balanced step-by-step reasoning and tool plan verification before executing tools.]",
+            "high": "\n\n[SYSTEM DIRECTIVE - THINKING MODE: HIGH. You are currently operating in HIGH THINKING MODE. Perform deep reasoning, multi-layer verification, edge-case analysis, and code safety checks before generating output.]",
+            "extended": "\n\n[SYSTEM DIRECTIVE - THINKING MODE: EXTENDED. You are currently operating in EXTENDED THINKING MODE (Claude Code Style). You MUST perform deep, exhaustive architectural thinking, multi-layer verification, and emit a detailed <thinking> ... </thinking> reasoning breakdown evaluating design options, code safety, edge cases, and step-by-step execution strategy before presenting your answer.]"
+        }
+        thinking_prompt = thinking_directives.get(thinking_level, thinking_directives["medium"])
+        if thinking_prompt not in user_request:
+            user_request += thinking_prompt
+
         if "queue" in context and "loop" in context:
             from .specialized_agents import ThreadSafeAgentCallbackHandler
             cb = ThreadSafeAgentCallbackHandler(context["queue"], context["loop"], selected_agent, session_id=session_id)
@@ -291,85 +310,98 @@ Original Request:
         # Intercept and prompt implementation plan for specialized tasks
         if selected_agent != "general" and selected_agent != "research" and context and "queue" in context and "loop" in context:
             if "Please execute the following approved plan:" not in user_request:
-                import os
-                chat_history = multi_agent_memory.get_messages(session_id)
-                if len(chat_history) > 10:
-                    chat_history = chat_history[-10:]
-                formatted_history = ""
-                if chat_history:
-                    formatted = []
-                    for msg in chat_history:
-                        role = "User" if msg.type == "human" else "Assistant"
-                        formatted.append(f"{role}: {msg.content}")
-                    formatted_history = "\n".join(formatted)
+                # If thinking level is low (Fast Mode), skip separate plan generation to maximize execution speed
+                if thinking_level == "low" and not any(kw in user_request.lower() for kw in ["require plan", "approve plan", "plan first", "plan review", "review plan"]):
+                    pass
+                else:
+                    import os
+                    queue = context["queue"]
+                    loop = context["loop"]
 
-                plan_prompt = f"""You are the Multi-Agent system's Expert Planner AND Senior Lead Coder. You have FULL AUTHORIZATION AND ACCESS to create, edit, inspect, and write local files and workspace directories.
+                    # Emit streaming notice so user knows plan generation is active
+                    loop.call_soon_threadsafe(
+                        queue.put_nowait,
+                        {
+                            "type": "thinking",
+                            "content": "\n📋 Generating workspace Implementation Plan...\n"
+                        }
+                    )
+
+                    chat_history = multi_agent_memory.get_messages(session_id)
+                    if len(chat_history) > 6:
+                        chat_history = chat_history[-6:]
+                    formatted_history = ""
+                    if chat_history:
+                        formatted = []
+                        for msg in chat_history:
+                            role = "User" if msg.type == "human" else "Assistant"
+                            formatted.append(f"{role}: {msg.content}")
+                        formatted_history = "\n".join(formatted)
+
+                    plan_prompt = f"""You are the Multi-Agent system's Expert Planner AND Senior Lead Coder. You have FULL AUTHORIZATION AND ACCESS to create, edit, inspect, and write local files and workspace directories.
 
 {get_workspace_instructions()}
 
 YOUR TASK:
-As the Senior Lead Coder & System Planner, generate a clear, comprehensive Markdown implementation plan for the user's software task.
+As the Senior Lead Coder & System Planner, generate a concise, structured Markdown implementation plan for the user's software task.
 
 Your implementation plan MUST include:
-1. Complete Project & File Blueprint: List all local files to be created or updated (e.g. index.html, style.css, script.js, app.py, etc.) with exact relative file paths.
-2. Modular Architecture & Styling: Define UI design patterns, CSS layout rules (flexbox/grids, color palette), data flow, and error boundary mechanisms.
-3. Precise Coding & Execution Steps: Outline the exact code structures, functions, and tool calls to be executed.
+1. Complete Project & File Blueprint: List all local files to be created or updated with exact relative file paths.
+2. Architecture & Design: Outline key components, layout, and functionality.
+3. Execution Steps: List tool calls and code generation steps.
 
 User Task: {user_request}
 Chat History: {formatted_history}
 
-CRITICAL DIRECTIVE: You are both an active Coder and Planner with full permission to access local files. NEVER state or claim that you lack file system access. Output ONLY the complete, structured Markdown plan directly."""
+Output ONLY the complete Markdown plan directly."""
 
-                try:
-                    plan_response = self.llm.invoke([SystemMessage(content=plan_prompt)])
-                    plan_content = plan_response.content
-                    from .config import AGENT_WORKSPACE_DIR
-                    plan_path = os.path.join(AGENT_WORKSPACE_DIR, "implementation_plan.md")
-                    os.makedirs(os.path.dirname(plan_path), exist_ok=True)
-                    with open(plan_path, 'w', encoding='utf-8') as f:
-                        f.write(plan_content)
+                    try:
+                        plan_response = self.llm.invoke([SystemMessage(content=plan_prompt)])
+                        plan_content = plan_response.content
+                        from .config import AGENT_WORKSPACE_DIR
+                        plan_path = os.path.join(AGENT_WORKSPACE_DIR, "implementation_plan.md")
+                        os.makedirs(os.path.dirname(plan_path), exist_ok=True)
+                        with open(plan_path, 'w', encoding='utf-8') as f:
+                            f.write(plan_content)
 
-                    queue = context["queue"]
-                    loop = context["loop"]
-                    
-                    # Only block execution for explicit plan approval if explicitly requested
-                    require_approval = context.get("require_plan_approval") is True or any(
-                        kw in user_request.lower() for kw in ["require plan", "approve plan", "plan first", "plan review", "review plan"]
-                    )
-                    
-                    if require_approval:
-                        from .permissions import register_and_wait_for_plan_approval
-                        approved_plan = register_and_wait_for_plan_approval(
-                            session_id=session_id,
-                            plan_content=plan_content,
-                            plan_path=plan_path,
-                            queue=queue,
-                            loop=loop
+                        # Only block execution for explicit plan approval if explicitly requested
+                        require_approval = context.get("require_plan_approval") is True or any(
+                            kw in user_request.lower() for kw in ["require plan", "approve plan", "plan first", "plan review", "review plan"]
                         )
-                    else:
-                        # Stream plan for UI visibility without blocking execution
-                        loop.call_soon_threadsafe(
-                            queue.put_nowait,
-                            {
-                                "type": "plan_request",
-                                "plan_path": plan_path,
-                                "plan_content": plan_content,
-                                "session_id": session_id,
-                                "auto_approved": True,
-                                "done": False
-                            }
-                        )
-                        approved_plan = plan_content
+                    
+                        if require_approval:
+                            from .permissions import register_and_wait_for_plan_approval
+                            approved_plan = register_and_wait_for_plan_approval(
+                                session_id=session_id,
+                                plan_content=plan_content,
+                                plan_path=plan_path,
+                                queue=queue,
+                                loop=loop
+                            )
+                        else:
+                            # Stream plan for UI visibility without blocking execution
+                            loop.call_soon_threadsafe(
+                                queue.put_nowait,
+                                {
+                                    "type": "plan_request",
+                                    "plan_path": plan_path,
+                                    "plan_content": plan_content,
+                                    "session_id": session_id,
+                                    "auto_approved": True,
+                                    "done": False
+                                }
+                            )
+                            approved_plan = plan_content
 
-                    user_request = f"""Please execute the following implementation plan:
+                        user_request = f"""Please execute the following implementation plan:
 
 {approved_plan}
 
 Original Request:
 {user_request}"""
-                    state["user_request"] = user_request
-                except Exception as pe:
-                    print(f"Error during implementation plan phase: {pe}")
+                        state["user_request"] = user_request
+                    except Exception as pe:
+                        print(f"Error during implementation plan phase: {pe}")
 
         if selected_agent == "general":
             history = multi_agent_memory.get_messages(session_id)

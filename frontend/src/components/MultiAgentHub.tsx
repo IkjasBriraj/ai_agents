@@ -34,10 +34,15 @@ import {
   Presentation,
   FileSpreadsheet,
   Download,
-  ExternalLink
+  ExternalLink,
+  Sparkles,
 } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
+import { SiriFluidOrb } from './SiriFluidOrb';
+import { AnimationSelector } from './AnimationSelector';
+import { ThinkingLevelSelector, type ThinkingLevel, getSavedThinkingLevel } from './ThinkingLevelSelector';
+import { playSiriActivationSound, playAgentProcessingPulse } from '@/lib/siriAudio';
 
 
 
@@ -76,7 +81,11 @@ const fallbackTokenize = (text: string): string[] => {
   return text.match(/[\w]+|[^\w\s]|\s+/g) || [text];
 };
 
-export const MultiAgentHub: React.FC = () => {
+interface MultiAgentHubProps {
+  onOpenPlayground?: () => void;
+}
+
+export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }) => {
   const [isHealthy, setIsHealthy] = useState<boolean | null>(null);
   const [loadingHealth, setLoadingHealth] = useState(true);
   
@@ -154,6 +163,7 @@ export const MultiAgentHub: React.FC = () => {
     }
 
     // Start recording
+    playSiriActivationSound();
     const recognition = new SpeechRecognition();
     recognition.continuous = true;
     recognition.interimResults = true;
@@ -242,6 +252,8 @@ export const MultiAgentHub: React.FC = () => {
   const [showLiveBrowser, setShowLiveBrowser] = useState(true);
   const [selectedImageModal, setSelectedImageModal] = useState<{ url: string; caption?: string } | null>(null);
   const [selectedPresentationModal, setSelectedPresentationModal] = useState<{ url: string; title?: string } | null>(null);
+  const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>(getSavedThinkingLevel());
+  const [activePlanContent, setActivePlanContent] = useState<{ planContent: string; planPath: string } | null>(null);
 
   const handlePermissionResponse = async (granted: boolean) => {
     if (!pendingPermissionRequest) return;
@@ -335,6 +347,7 @@ export const MultiAgentHub: React.FC = () => {
       let index = 1;
       
       interval = window.setInterval(() => {
+        playAgentProcessingPulse();
         setThinkingSubStep(thoughts[index % thoughts.length]);
         index++;
       }, 3000); // Transition steps every 3 seconds
@@ -576,6 +589,9 @@ export const MultiAgentHub: React.FC = () => {
     const newMessages = [...messages, { role: 'user' as const, content: userText }];
     setMessages(newMessages);
     
+    // Play Siri activation chime when agent execution starts
+    playSiriActivationSound();
+
     setIsTyping(true);
     setRoutingStep(1); // Orchestrator active
     setActiveRoutingAgent(null);
@@ -602,7 +618,7 @@ export const MultiAgentHub: React.FC = () => {
       }
 
       try {
-        const response = await OllamaService.chatDirectAgent(selectedDirectAgent, userText);
+        const response = await OllamaService.chatDirectAgent(selectedDirectAgent, userText, undefined, thinkingLevel);
         
         const finalContent = typeof response === 'string' ? response : (response?.response || response?.result || response?.content || response?.output || 'Task completed successfully.');
         const toolsParsed = parseToolExecutions(finalContent, selectedDirectAgent);
@@ -841,6 +857,10 @@ export const MultiAgentHub: React.FC = () => {
                 planPath: event.plan_path,
                 sessionId: event.session_id || 'default'
               });
+              setActivePlanContent({
+                planContent: event.plan_content,
+                planPath: event.plan_path
+              });
               setEditedPlanContent(event.plan_content);
               setIsPlanModalOpen(true);
               setActivePlanTab('preview');
@@ -940,7 +960,9 @@ export const MultiAgentHub: React.FC = () => {
             setRoutingStep(0);
             setActiveRoutingAgent(null);
             setActiveTool(null);
-          }
+          },
+          undefined,
+          thinkingLevel
         );
       } catch (err) {
         console.error("Failed to connect", err);
@@ -1129,15 +1151,9 @@ export const MultiAgentHub: React.FC = () => {
         )}
       >
         <div className="flex items-center gap-3">
-          <div 
-            className={cn(
-              "w-3 h-3 rounded-full animate-pulse shadow-glow",
-              isHealthy === true 
-                ? "bg-accent shadow-accent/50" 
-                : isHealthy === false 
-                  ? "bg-destructive shadow-destructive/50" 
-                  : "bg-muted-foreground"
-            )}
+          <SiriFluidOrb 
+            size="sm" 
+            state={isHealthy === true ? 'healthy' : isHealthy === false ? 'offline' : 'idle'} 
           />
           <div className="font-mono text-sm tracking-widest uppercase">
             {loadingHealth 
@@ -1159,17 +1175,47 @@ export const MultiAgentHub: React.FC = () => {
         </Button>
       </div>
 
+      {/* Featured Playground Banner */}
+      {onOpenPlayground && (
+        <div className="bg-gradient-to-r from-purple-900/60 via-indigo-900/50 to-blue-900/60 border border-purple-500/40 p-4 rounded-lg flex flex-col sm:flex-row items-center justify-between gap-4 shadow-lg animate-in fade-in duration-500">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 bg-purple-500/20 rounded-lg border border-purple-400/30">
+              <Sparkles className="w-6 h-6 text-amber-300 animate-pulse" />
+            </div>
+            <div>
+              <div className="font-semibold text-sm text-foreground flex items-center gap-2">
+                Play with Your Ideas — AI Studio Playground
+                <span className="text-[10px] bg-purple-500/30 text-purple-200 border border-purple-400/40 px-2 py-0.5 font-mono">NEW</span>
+              </div>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Experiment freely with Research & Business agents, system prompt tuning, quick idea templates, and the new web fetch tool.
+              </p>
+            </div>
+          </div>
+          <Button 
+            onClick={onOpenPlayground}
+            className="bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-mono text-xs uppercase px-5 py-2.5 gap-2 flex-shrink-0 shadow-md transition-all hover:scale-105"
+          >
+            <Sparkles className="w-4 h-4 text-amber-300" />
+            Open Playground Page
+          </Button>
+        </div>
+      )}
+
       {/* 2. Interactive SVG Network Path Visualizer */}
       <Card className="carbon-card relative overflow-hidden backdrop-blur-xl bg-card/75 shadow-lg">
         <CardHeader className="pb-2 border-b border-border/30">
-          <div className="flex justify-between items-center">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <CardTitle className="text-xl font-light tracking-wide flex items-center gap-2">
               <Layers className="w-5 h-5 text-primary" />
               LangGraph Multi-Agent Core Network
             </CardTitle>
-            <span className="font-mono text-xs uppercase text-muted-foreground bg-muted px-2 py-0.5 border">
-              Model: Gemma-4 / Llama-3.2
-            </span>
+            <div className="flex items-center gap-3">
+              <AnimationSelector variant="compact" />
+              <span className="font-mono text-xs uppercase text-muted-foreground bg-muted px-2 py-0.5 border hidden md:inline-block">
+                Model: Gemma-4 / Llama-3.2
+              </span>
+            </div>
           </div>
         </CardHeader>
         <CardContent className="pt-8 pb-6">
@@ -1180,11 +1226,17 @@ export const MultiAgentHub: React.FC = () => {
               className={cn(
                 "relative z-10 w-44 p-4 border flex flex-col items-center justify-center transition-all duration-500",
                 routingStep === 1 
-                  ? "border-primary bg-primary/10 shadow-glow shadow-primary/30 scale-105" 
+                  ? "border-primary bg-primary/10 shadow-glow shadow-primary/30 scale-105 siri-fluid-border-frame" 
                   : "border-border bg-card"
               )}
             >
-              <Cpu className={cn("w-10 h-10 mb-2", routingStep === 1 ? "text-primary animate-pulse" : "text-muted-foreground")} />
+              <SiriFluidOrb 
+                size="lg" 
+                state={routingStep === 1 ? 'thinking' : 'active'}
+                className="mb-2"
+              >
+                <Cpu className={cn("w-8 h-8 text-white drop-shadow-md", routingStep === 1 && "animate-pulse")} />
+              </SiriFluidOrb>
               <div className="font-bold text-center text-sm">Orchestrator Agent</div>
               <div className="font-mono text-[9px] text-muted-foreground mt-1">MAIN COORDINATOR</div>
               {routingStep === 1 && (
@@ -1425,7 +1477,7 @@ export const MultiAgentHub: React.FC = () => {
 
         {/* PLAYGROUND RIGHT PANEL (CHAT AND OUTPUTS) */}
         <div className="lg:col-span-2 space-y-6">
-          <Card className="carbon-card flex flex-col min-h-[600px] max-h-[700px] relative">
+          <Card className={cn("carbon-card flex flex-col min-h-[600px] max-h-[700px] relative transition-all duration-500", (isTyping || isRecording) && "siri-fluid-border-frame shadow-[0_0_30px_rgba(168,85,247,0.35)]")}>
             <CardHeader className="pb-3 border-b border-border/20 flex flex-row items-center justify-between">
               <div>
                 <CardTitle className="text-xl font-light">Interactive Hub Playground</CardTitle>
@@ -1435,7 +1487,27 @@ export const MultiAgentHub: React.FC = () => {
                     : `Direct communication with ${selectedDirectAgent.toUpperCase()} Agent`}
                 </p>
               </div>
-              <span className="w-2.5 h-2.5 bg-accent rounded-full animate-ping" />
+              <div className="flex items-center gap-2">
+                {activePlanContent && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setEditedPlanContent(activePlanContent.planContent);
+                      setIsPlanModalOpen(true);
+                    }}
+                    className="h-8 font-mono text-[10px] uppercase gap-1.5 border-ibm-blue/40 text-ibm-blue hover:bg-ibm-blue/10 animate-in fade-in duration-200"
+                  >
+                    <FileText className="w-3.5 h-3.5" />
+                    <span className="hidden sm:inline">Implementation Plan</span>
+                  </Button>
+                )}
+                <ThinkingLevelSelector variant="dropdown" value={thinkingLevel} onChange={setThinkingLevel} />
+                <span className="text-[10px] font-mono uppercase text-muted-foreground hidden sm:inline">
+                  {isRecording ? 'Agentic Voice Core' : isTyping ? 'Agentic Fluid Core' : 'Agentic Core Intelligence'}
+                </span>
+                <SiriFluidOrb size="sm" state={isRecording ? 'recording' : isTyping ? 'thinking' : 'active'} />
+              </div>
             </CardHeader>
             
             {/* CHAT LOGS */}
@@ -1660,8 +1732,8 @@ export const MultiAgentHub: React.FC = () => {
                   <div className="p-5 bg-card border border-border min-w-[320px] max-w-[85%] space-y-4">
                     {/* Orchestrator intent analyzing */}
                     {routingStep >= 1 && (
-                      <div className="flex items-center gap-2 text-xs text-primary font-mono">
-                        <span className="w-1.5 h-1.5 bg-primary rounded-full animate-ping" />
+                      <div className="flex items-center gap-2.5 text-xs text-primary font-mono">
+                        <SiriFluidOrb size="xs" state="thinking" />
                         <span>Orchestrator: Analyzing input classification...</span>
                       </div>
                     )}
@@ -1669,8 +1741,8 @@ export const MultiAgentHub: React.FC = () => {
                     {/* Routed to specialized agent */}
                     {routingStep >= 2 && (
                       <div className="flex flex-col gap-2 pl-3">
-                        <div className="flex items-center gap-2 text-xs text-accent font-mono">
-                          <span className="w-1.5 h-1.5 bg-accent rounded-full animate-ping" />
+                        <div className="flex items-center gap-2.5 text-xs text-accent font-mono">
+                          <SiriFluidOrb size="xs" state="active" />
                           <span className="font-bold">Routed: {activeRoutingAgent?.toUpperCase()} AGENT</span>
                         </div>
                         
@@ -1904,8 +1976,8 @@ export const MultiAgentHub: React.FC = () => {
                         Live Agent Browser View
                       </span>
                       {liveBrowserActive ? (
-                        <span className="flex items-center gap-1 bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 text-[9px] font-mono px-2 py-0.5 animate-pulse">
-                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
+                        <span className="flex items-center gap-1.5 bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 text-[9px] font-mono px-2 py-0.5">
+                          <SiriFluidOrb size="xs" state="healthy" showGlow={false} />
                           LIVE (~2fps)
                         </span>
                       ) : (
@@ -1962,9 +2034,9 @@ export const MultiAgentHub: React.FC = () => {
             <div className="p-4 border-t border-border bg-muted/20">
               {/* Recording Indicator */}
               {isRecording && (
-                <div className="flex items-center gap-2 mb-3 px-3 py-2 bg-red-500/10 border border-red-500/30 animate-pulse">
-                  <div className="w-2.5 h-2.5 rounded-full bg-red-500 animate-ping" />
-                  <span className="text-xs font-mono text-red-400 uppercase tracking-wider">Recording — Speak now...</span>
+                <div className="flex items-center gap-3 mb-3 px-3.5 py-2 bg-red-500/10 border border-red-500/30 animate-pulse siri-fluid-border-frame">
+                  <SiriFluidOrb size="sm" state="recording" />
+                  <span className="text-xs font-mono text-red-400 uppercase tracking-wider font-semibold">Agentic Voice Intelligence Active — Speak now...</span>
                   <span className="ml-auto text-[10px] font-mono text-red-400/70">Click mic to stop</span>
                 </div>
               )}
@@ -2033,8 +2105,11 @@ export const MultiAgentHub: React.FC = () => {
                   </Button>
                 )}
               </div>
-              <div className="flex justify-between items-center mt-3 text-[10px] font-mono text-muted-foreground">
-                <span>Press Enter to send, Shift+Enter for new line · 🎤 Voice input supported</span>
+              <div className="flex flex-col sm:flex-row justify-between items-center mt-3 gap-2 text-[10px] font-mono text-muted-foreground">
+                <div className="flex items-center gap-3">
+                  <span>Press Enter to send, Shift+Enter for new line · 🎤 Voice supported</span>
+                  <ThinkingLevelSelector variant="compact" value={thinkingLevel} onChange={setThinkingLevel} />
+                </div>
                 <span className="flex items-center gap-1.5">
                   <FolderCheck className="w-3.5 h-3.5 text-accent" />
                   File-writer Workspace Target: <strong className="text-foreground">D:\learning\code\website</strong>
@@ -2047,7 +2122,7 @@ export const MultiAgentHub: React.FC = () => {
       </div>
 
       {/* Implementation Plan Overlay Modal Window */}
-      {isPlanModalOpen && pendingPlanApproval && (
+      {isPlanModalOpen && (pendingPlanApproval || activePlanContent) && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4 md:p-6 animate-in fade-in duration-200">
           <div className="bg-card border border-border w-full max-w-4xl h-[85vh] flex flex-col shadow-2xl relative animate-in zoom-in-95 duration-200 text-foreground">
             {/* Header */}
@@ -2097,7 +2172,7 @@ export const MultiAgentHub: React.FC = () => {
 
               {/* Path metadata */}
               <div className="p-2.5 bg-muted/30 border border-border/50 text-[10px] font-mono text-muted-foreground flex justify-between items-center">
-                <span>Plan File Path: <strong className="text-foreground">{pendingPlanApproval.planPath}</strong></span>
+                <span>Plan File Path: <strong className="text-foreground">{(pendingPlanApproval || activePlanContent)?.planPath}</strong></span>
                 <span className="text-ibm-blue uppercase font-bold text-[9px]">Local Work Target</span>
               </div>
 
@@ -2105,7 +2180,7 @@ export const MultiAgentHub: React.FC = () => {
               <div className="flex-1 overflow-hidden border border-border/80 bg-black/20">
                 {activePlanTab === 'preview' ? (
                   <div className="h-full overflow-y-auto p-6 scrollbar-thin select-text">
-                    {renderMarkdown(editedPlanContent || pendingPlanApproval.planContent)}
+                    {renderMarkdown(editedPlanContent || (pendingPlanApproval || activePlanContent)?.planContent || '')}
                   </div>
                 ) : (
                   <textarea
@@ -2120,19 +2195,30 @@ export const MultiAgentHub: React.FC = () => {
 
             {/* Footer */}
             <div className="p-4 border-t border-border flex gap-3 justify-end bg-muted/40">
-              <Button
-                variant="outline"
-                onClick={() => handlePlanApprovalResponse(false)}
-                className="h-9 px-4 text-xs font-mono uppercase border-destructive/40 hover:bg-destructive/10 text-destructive-foreground hover:text-destructive hover:border-destructive"
-              >
-                Reject / Cancel Task
-              </Button>
-              <Button
-                onClick={() => handlePlanApprovalResponse(true)}
-                className="h-9 px-5 text-xs font-mono uppercase bg-emerald-600 hover:bg-emerald-700 text-white border-0"
-              >
-                Proceed with Execution
-              </Button>
+              {pendingPlanApproval ? (
+                <>
+                  <Button
+                    variant="outline"
+                    onClick={() => handlePlanApprovalResponse(false)}
+                    className="h-9 px-4 text-xs font-mono uppercase border-destructive/40 hover:bg-destructive/10 text-destructive-foreground hover:text-destructive hover:border-destructive"
+                  >
+                    Reject / Cancel Task
+                  </Button>
+                  <Button
+                    onClick={() => handlePlanApprovalResponse(true)}
+                    className="h-9 px-5 text-xs font-mono uppercase bg-emerald-600 hover:bg-emerald-700 text-white border-0"
+                  >
+                    Proceed with Execution
+                  </Button>
+                </>
+              ) : (
+                <Button
+                  onClick={() => setIsPlanModalOpen(false)}
+                  className="h-9 px-5 text-xs font-mono uppercase bg-ibm-blue hover:bg-ibm-blue/80 text-white border-0"
+                >
+                  Close Plan Window
+                </Button>
+              )}
             </div>
           </div>
         </div>
