@@ -529,10 +529,10 @@ class RobustReActParser(ReActSingleInputOutputParser):
                 )
 
             # If tools have ALREADY been executed in this session and a file write occurred, returning AgentFinish with output is acceptable.
-            if len(self._previous_actions) > 0 or len(self._consecutive_counts) > 0:
-                clean_output = text
-                if text_lower.strip().startswith("thought:"):
-                    clean_output = text[8:].strip()
+                clean_output = re.sub(r'<\|[^|]*\|?>?', '', text)
+                clean_output = re.sub(r'</?tool_response>', '', clean_output).strip()
+                if clean_output.lower().startswith("thought:"):
+                    clean_output = clean_output[8:].strip()
                 return AgentFinish({"output": clean_output}, text)
             else:
                 raise OutputParserException(
@@ -561,6 +561,14 @@ class ThreadSafeAgentCallbackHandler(BaseCallbackHandler):
 
     def on_llm_new_token(self, token: str, **kwargs) -> None:
         self._check_cancellation()
+        # Sanitize raw model control tokens (e.g. <|tool_response>, <|im_start|>, <|im_end|>, etc.)
+        if token and ("<|" in token or "tool_response" in token):
+            clean_token = re.sub(r'<\|[^|]*\|?>?', '', token)
+            clean_token = re.sub(r'</?tool_response>', '', clean_token)
+            token = clean_token
+        if not token:
+            return
+
         if self.agent_type == "general":
             self._put_event({"type": "token", "content": token})
         else:

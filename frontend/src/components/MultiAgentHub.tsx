@@ -986,17 +986,23 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
                 });
               }
             } else if (event.type === 'thinking' && event.content) {
-              // Accumulate agent reasoning tokens for live display
-              localThinkingTokens.push(event.content);
-              setThinkingTokens([...localThinkingTokens]);
-              setThinkingStream(prev => prev + event.content);
+              const cleanContent = event.content.replace(/<\|[^|]*\|?>?/g, '').replace(/<\/?tool_response>/g, '');
+              if (cleanContent) {
+                localThinkingTokens.push(cleanContent);
+                setThinkingTokens([...localThinkingTokens]);
+                setThinkingStream(prev => prev + cleanContent);
+              }
             } else if (event.type === 'response' && event.content) {
+              const cleanFull = event.content.replace(/<\|[^|]*\|?>?/g, '').replace(/<\/?tool_response>/g, '');
               setRoutingStep(3); // Streaming final output
-              fullResponseText = event.content;
+              fullResponseText = cleanFull;
               
               if (event.token) {
-                localResponseTokens.push(event.token);
-                setResponseTokens([...localResponseTokens]);
+                const cleanToken = event.token.replace(/<\|[^|]*\|?>?/g, '').replace(/<\/?tool_response>/g, '');
+                if (cleanToken) {
+                  localResponseTokens.push(cleanToken);
+                  setResponseTokens([...localResponseTokens]);
+                }
               }
               
               if (event.done) {
