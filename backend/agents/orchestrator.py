@@ -542,6 +542,17 @@ Conversation History:
             state["review_critique"] = "PASSED"
             return state
 
+        # Run automated build and syntax verification on workspace files
+        try:
+            from .tools import verify_project_build
+            ver_res = json.loads(verify_project_build(""))
+            if ver_res.get("status") == "FAILED":
+                diags = "\n".join(ver_res.get("diagnostics", []))
+                state["review_critique"] = f"CRITICAL BUILD/VERIFICATION ERRORS DETECTED:\n{diags}\nPlease fix all reported syntax and compilation errors immediately."
+                return state
+        except Exception as ver_err:
+            print(f"Build verification check skipped: {ver_err}")
+
         review_prompt = f"""You are a Senior Reviewer. Your job is to audit the agent's response against the user's original request.
 
 User Request:

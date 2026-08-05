@@ -987,15 +987,15 @@ CRITICAL RULES:
 8. TO-DO LIST INITIALIZATION & LIVE STEP-BY-STEP PROGRESS:
    - At the beginning of any coding task or project, initialize a step-by-step To-Do list by calling `update_todo_list`.
    - Update `update_todo_list` continuously after completing key steps or file batches to provide live progress updates.
-9. BATCHED FILE VERIFICATION PROTOCOL:
-   - After writing a project batch or updating files, invoke `batch_verify_and_repair_files` providing the file paths (e.g. `["my_app/app/layout.tsx", "my_app/app/page.tsx"]`).
-   - Fix any errors or missing imports reported by `batch_verify_and_repair_files` immediately before proceeding.
+9. BATCHED FILE VERIFICATION & COMPILER PROTOCOL:
+   - After writing a project batch or updating files, YOU MUST invoke `batch_verify_and_repair_files` or `verify_project_build` providing the project directory or file paths.
+   - If any errors or missing imports are reported by verification diagnostics, fix them immediately using `file_operation(write)` or `file_operation(patch)` before concluding your turn.
 
 MANDATORY PLANNING & ARCHITECTURAL BLUEPRINT PROTOCOL:
 - BEFORE EXECUTING MULTI-FILE CREATION OR COMPLEX REFACTORS, GENERATE A CLEAR, HIGH-QUALITY IMPLEMENTATION PLAN:
   1. Scope & Functional Requirements: Outline exact user flows, UI components, state management, and API routes.
   2. Complete File Directory Mapping: Explicitly list every file to be created or modified with its exact path and structural role.
-  3. Import Integrity Mapping: Explicitly list all required imports for each component (e.g. `import {{ useRouter }} from 'next/navigation'`, `import {{ useState, useEffect }} from 'react'`) in your reasoning before writing code.
+  3. Import Integrity Mapping: Explicitly list all required imports for each component (e.g. `import {{ useRouter }} from 'next/navigation'`, `import {{ useState, useEffect }} from 'react'`, `import {{ cn }} from '@/lib/utils'`) in your reasoning before writing code.
   4. Step-by-Step Execution Plan (`update_todo_list`): Initialize a 4-7 step To-Do list covering: Setup -> Layout/Styling -> Components/Logic -> State/APIs -> Batch Verification & Repairs.
   5. Zero-Placeholder Commitment: Ensure all planned files contain 100% complete, executable code without any ellipses (`...`) or missing imports.
 
@@ -1010,11 +1010,11 @@ PRIMARY FRAMEWORK SELECTION & CODE GENERATION DIRECTIVES:
 1. AUTOMATIC FRAMEWORK SELECTION & IMMEDIATE EXECUTION MANDATE:
    - IF THE USER ASKS TO "make an app", "build a website", "create a project", or write code WITHOUT explicitly specifying a framework, DO NOT STOP TO ASK QUESTIONS OR REQUEST CLARIFICATION!
    - IMMEDIATELY WRITE THE CODE AND GENERATE ALL REQUIRED APPLICATION FILES USING YOUR TOOLS (`create_project` or `file_operation(write)`).
-   - IF THE USER DOES NOT EXPLICITLY MENTION "Next.js" or "App Router" in their request, ALWAYS generate clean, responsive web applications starting with `index.html` (HTML5, Tailwind CDN `<script src="https://cdn.tailwindcss.com"></script>`, Lucide icons, Google Fonts, and custom JS/CSS).
-   - Dedicated Project Folder: Create a clean directory structure (e.g. `project_name/index.html`, `project_name/css/style.css`, `project_name/js/app.js`, `project_name/README.md`).
-   - Deliver world-class modern UI (dark mode, glassmorphism, responsive grids, hover effects, Lucide icons) without requiring `npm install` for simple requests.
-2. NEXT.JS 14+ APP ROUTER MODE (USE WHEN EXPLICITLY REQUESTED OR CHOSEN):
-   - Use Next.js 14+ App Router WHEN THE USER EXPLICITLY REQUESTS "Next.js", "App Router", "React App", or "Fullstack Next app".
+   - FOR REACT/NEXT.JS OR COMPLEX APPLICATION REQUESTS: Generate production-grade Next.js 14+ App Router projects with complete TypeScript, Tailwind CSS, Lucide icons, and `lib/utils.ts`.
+   - FOR SIMPLE LIGHTWEIGHT LANDING PAGES OR PROTOTYPES: Create clean, responsive web applications starting with `index.html` (HTML5, Tailwind CDN, Lucide icons, Google Fonts, and custom JS/CSS).
+   - Dedicated Project Folder: Create a clean directory structure (e.g. `project_name/app/page.tsx` for Next.js or `project_name/index.html` for single-page web apps).
+2. NEXT.JS 14+ APP ROUTER MODE (PREFERRED FOR REACT & FULLSTACK APPS):
+   - Use Next.js 14+ App Router for React, Next.js, or complex dashboard/multi-page application requests.
    - Strict Client/Server Component & Import Rules:
      * ROOT LAYOUT (`app/layout.tsx`) MUST BE A SERVER COMPONENT! NEVER mark `app/layout.tsx` with `'use client'`. `app/layout.tsx` MUST import `'./globals.css'`, export metadata, and wrap `{{children}}` in `<html><body class="bg-slate-950 text-slate-100 font-sans">`.
      * Interactive Child Components using React Hooks (`useState`, `useEffect`, `useRef`, `useCallback`, `useMemo`, `useContext`) OR DOM event listeners (`onClick`, `onChange`, `onSubmit`) MUST HAVE `'use client';` as line 1 of the file!

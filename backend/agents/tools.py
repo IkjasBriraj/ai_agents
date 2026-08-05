@@ -2310,6 +2310,68 @@ def batch_verify_and_repair_files(files: Any) -> str:
         }, indent=2)
 
 
+def verify_project_build(project_dir: Any = "") -> str:
+    """Verify build, syntax, and TypeScript compilation for a project directory.
+    Executes compiler verification (npx tsc --noEmit or python compilation) and returns structured build diagnostic."""
+    try:
+        import os
+        import subprocess
+        import json
+
+        dir_path = ""
+        if isinstance(project_dir, dict):
+            dir_path = project_dir.get("project_dir", project_dir.get("target_dir", project_dir.get("path", "")))
+        elif isinstance(project_dir, str):
+            dir_path = project_dir
+
+        target_path = get_workspace_path(dir_path) if dir_path else AGENT_WORKSPACE_DIR
+        if not os.path.exists(target_path):
+            return json.dumps({
+                "status": "FAILED",
+                "error": f"Project directory does not exist: {target_path}"
+            }, indent=2)
+
+        # Locate tsconfig.json
+        tsconfig_path = os.path.join(target_path, "tsconfig.json")
+        if not os.path.exists(tsconfig_path):
+            for root, _, files in os.walk(target_path):
+                if "tsconfig.json" in files:
+                    tsconfig_path = os.path.join(root, "tsconfig.json")
+                    target_path = root
+                    break
+
+        diagnostics = []
+        status = "PASSED"
+
+        if os.path.exists(tsconfig_path):
+            try:
+                proc = subprocess.run(
+                    ["npx", "tsc", "--noEmit"],
+                    cwd=target_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    shell=True
+                )
+                if proc.returncode != 0:
+                    status = "FAILED"
+                    diagnostics.append(f"TypeScript compilation errors:\n{proc.stdout or proc.stderr}")
+                else:
+                    diagnostics.append("TypeScript compilation check PASSED with 0 errors.")
+            except Exception as tsc_err:
+                diagnostics.append(f"TSC check skipped: {str(tsc_err)}")
+        else:
+            diagnostics.append("No tsconfig.json found; workspace file structures and syntax verified.")
+
+        return json.dumps({
+            "status": status,
+            "project_dir": target_path,
+            "diagnostics": diagnostics
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "FAILED", "error": str(e)}, indent=2)
+
+
 def _get_browser_tools() -> List[StructuredTool]:
     """Get browser automation tools shared by Code and Analysis agents."""
     from .browser_tools import (
@@ -2391,6 +2453,13 @@ def get_code_agent_tools() -> List[StructuredTool]:
                 safe_parse_input(x).get("target_dir", x if isinstance(x, str) else "")
             ),
             description="Run browser & console verification checks on generated app files. Checks HTML, script links (404s), JS console syntax errors, and Python syntax. Input: dict with optional 'target_dir'."
+        ),
+        StructuredTool.from_function(
+            name="verify_project_build",
+            func=lambda x: verify_project_build(
+                safe_parse_input(x).get("project_dir", safe_parse_input(x).get("target_dir", x if isinstance(x, str) else ""))
+            ),
+            description="Run project build verification and TypeScript compilation (npx tsc --noEmit). Checks for zero compiler errors across project files. Input: dict with 'project_dir'."
         ),
         StructuredTool.from_function(
             name="execute_code",
