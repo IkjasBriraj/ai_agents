@@ -959,8 +959,19 @@ def create_project_structure(structure: Any) -> str:
             tsconfig_path = os.path.join(base_dir, "tsconfig.json") if base_dir else "tsconfig.json"
             css_path = os.path.join(base_dir, "app", "globals.css") if base_dir else "app/globals.css"
 
-            # Auto-create lib/utils.ts if missing
-            if not any(f.replace("\\", "/").endswith("lib/utils.ts") or f.replace("\\", "/").endswith("lib/utils.js") for f in created_files):
+            # Auto-create or repair lib/utils.ts if missing or invalid
+            utils_full = get_workspace_path(utils_path)
+            utils_invalid = not os.path.exists(utils_full)
+            if not utils_invalid:
+                try:
+                    with open(utils_full, "r", encoding="utf-8") as uf:
+                        u_code = uf.read()
+                        if "function cn" not in u_code and "const cn" not in u_code:
+                            utils_invalid = True
+                except Exception:
+                    utils_invalid = True
+
+            if utils_invalid:
                 cn_content = """import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
 
@@ -969,11 +980,22 @@ export function cn(...inputs: ClassValue[]) {
 }
 """
                 w_res = write_file_content(utils_path, cn_content)
-                if "Error" not in w_res:
+                if "Error" not in w_res and utils_path not in created_files:
                     created_files.append(utils_path)
 
-            # Auto-create tailwind.config.js if missing
-            if not any(f.replace("\\", "/").endswith("tailwind.config.js") or f.replace("\\", "/").endswith("tailwind.config.ts") for f in created_files):
+            # Auto-create or repair tailwind.config.js if missing or truncated
+            tw_full = get_workspace_path(tailwind_path)
+            tw_invalid = not os.path.exists(tw_full)
+            if not tw_invalid:
+                try:
+                    with open(tw_full, "r", encoding="utf-8") as tf:
+                        t_code = tf.read()
+                        if "module.exports" not in t_code and "export default" not in t_code or not t_code.strip().endswith("};"):
+                            tw_invalid = True
+                except Exception:
+                    tw_invalid = True
+
+            if tw_invalid:
                 tw_content = """/** @type {import('tailwindcss').Config} */
 module.exports = {
   content: [
@@ -994,11 +1016,20 @@ module.exports = {
 };
 """
                 w_res = write_file_content(tailwind_path, tw_content)
-                if "Error" not in w_res:
+                if "Error" not in w_res and tailwind_path not in created_files:
                     created_files.append(tailwind_path)
 
-            # Auto-create tsconfig.json if missing
-            if not any(f.replace("\\", "/").endswith("tsconfig.json") for f in created_files):
+            # Auto-create or repair tsconfig.json if missing or invalid JSON
+            ts_full = get_workspace_path(tsconfig_path)
+            ts_invalid = not os.path.exists(ts_full)
+            if not ts_invalid:
+                try:
+                    with open(ts_full, "r", encoding="utf-8") as tsf:
+                        json.loads(tsf.read())
+                except Exception:
+                    ts_invalid = True
+
+            if ts_invalid:
                 ts_content = """{
   "compilerOptions": {
     "target": "es5",
@@ -1022,11 +1053,21 @@ module.exports = {
 }
 """
                 w_res = write_file_content(tsconfig_path, ts_content)
-                if "Error" not in w_res:
+                if "Error" not in w_res and tsconfig_path not in created_files:
                     created_files.append(tsconfig_path)
 
-            # Auto-create app/globals.css if missing
-            if not any(f.replace("\\", "/").endswith("globals.css") for f in created_files):
+            # Auto-create or repair app/globals.css if missing
+            css_full = get_workspace_path(css_path)
+            css_invalid = not os.path.exists(css_full)
+            if not css_invalid:
+                try:
+                    with open(css_full, "r", encoding="utf-8") as cf:
+                        if "@tailwind" not in cf.read():
+                            css_invalid = True
+                except Exception:
+                    css_invalid = True
+
+            if css_invalid:
                 css_content = """@tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -1043,11 +1084,20 @@ body {
 }
 """
                 w_res = write_file_content(css_path, css_content)
-                if "Error" not in w_res:
+                if "Error" not in w_res and css_path not in created_files:
                     created_files.append(css_path)
 
-            # Auto-create package.json if missing
-            if not any(f.replace("\\", "/").endswith("package.json") for f in created_files):
+            # Auto-create or repair package.json if missing or invalid JSON
+            pkg_full = get_workspace_path(pkg_path)
+            pkg_invalid = not os.path.exists(pkg_full)
+            if not pkg_invalid:
+                try:
+                    with open(pkg_full, "r", encoding="utf-8") as pf:
+                        json.loads(pf.read())
+                except Exception:
+                    pkg_invalid = True
+
+            if pkg_invalid:
                 pkg_content = """{
   "name": "nextjs-app",
   "version": "0.1.0",
@@ -1080,7 +1130,7 @@ body {
 }
 """
                 w_res = write_file_content(pkg_path, pkg_content)
-                if "Error" not in w_res:
+                if "Error" not in w_res and pkg_path not in created_files:
                     created_files.append(pkg_path)
 
         # Auto-generate README.md for multi-file projects if omitted

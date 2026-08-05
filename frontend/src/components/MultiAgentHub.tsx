@@ -1008,6 +1008,7 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
                 if (localThinkingTokens.length > 0) {
                   updateLastAssistantMessage({ thinkingProcess: localThinkingTokens.join('') });
                 }
+                setTodoItems(prev => prev.map(t => ({ ...t, status: 'completed' })));
                 finalizeResponse();
               } else {
                 hasStreamedResponse = true;

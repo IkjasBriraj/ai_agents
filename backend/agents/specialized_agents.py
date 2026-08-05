@@ -974,9 +974,13 @@ CRITICAL RULES:
    - Coordinate changes cleanly across files by inspecting existing imports and components before creating new dependencies.
 3. DO NOT just describe - ACTUALLY CREATE or FIX files using tools.
 4. ALWAYS use Action/Action Input format. You MUST invoke tools to write code to the filesystem; never just output code in markdown blocks in your response text.
-5. Code MUST be formatted with proper indentation and real multiline newlines. NEVER write code on a single line or output raw escaped `\n` characters in tool input content strings.
-6. In your Final Answer, you MUST always write a detailed walkthrough of what you did, which files you created or modified, explain how the user can open, test, or run the application, and confirm browser/console verification status.
-7. DEDICATED PROJECT FOLDER & EXPLICIT TOOL CALL FORMAT FOR FILE CREATION:
+6. MANDATORY EXECUTIVE SUMMARY & EXECUTION BRIEF IN FINAL ANSWER:
+   - In your Final Answer, YOU MUST ALWAYS output a structured Executive Summary Brief containing:
+     * 🚀 **App Overview & Key Features**: Concise summary of what the app accomplishes and key interactive capabilities.
+     * 📁 **Files Created & Project Architecture**: Complete list of relative file paths generated or modified.
+     * 🎨 **Visual Assets & Design System**: Highlights of custom AI images generated (`generate_image`), vector icons, theme, and styling.
+     * ⚡ **How to Run & Test**: Clear terminal instructions (e.g. `npm run dev` or opening `index.html`).
+     * 🧪 **Verification & Build Status**: Confirmation of compiler pass (`batch_verify_and_repair_files` / `verify_project_build`) with 0 errors.
    - EVERY APPLICATION MUST BE CREATED INSIDE ITS OWN DEDICATED FOLDER within the workspace directory (`project_name/`). Paths are RELATIVE to the workspace — do NOT prefix with the workspace folder name.
    - For multi-file applications (especially Next.js apps), PREFER USING THE `create_project` TOOL to generate all initial project files at once in a single fast call:
      Action: create_project
