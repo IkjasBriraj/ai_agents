@@ -3,6 +3,7 @@ AI Guide Backend - API Router
 FastAPI router for the AI Guide chat endpoint
 """
 
+import os
 import json
 import logging
 from typing import AsyncGenerator

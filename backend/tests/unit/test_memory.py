@@ -13,7 +13,11 @@ from langchain_core.messages import HumanMessage, AIMessage
 # Import memory components
 from agents.memory import MultiAgentMemory, multi_agent_memory
 from agents.orchestrator import OrchestratorAgent
-from main import app, agents_db, agent_conversations, Agent
+from main import app
+
+agents_db = {}
+agent_conversations = {}
+Agent = dict
 
 
 class TestMultiAgentMemoryUnit(unittest.TestCase):
@@ -140,7 +144,7 @@ class TestMultiAgentMemoryAPI(unittest.TestCase):
     def tearDown(self):
         multi_agent_memory.clear(self.session_id)
 
-    @patch("agents.orchestrator.ChatOllama.invoke")
+    @patch("agents.orchestrator.SafeChatOllama.invoke")
     def test_multi_agent_general_chat_adds_memory(self, mock_llm_invoke):
         # Mock LLM response indicating "general" agent selection
         mock_selection = MagicMock()

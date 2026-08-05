@@ -1,0 +1,66 @@
+{
+  "agent_tools": {
+    "code": [
+      "generate_image",
+      "batch_verify_and_repair_files",
+      "execute_code",
+      "generate_code",
+      "file_operation",
+      "create_project",
+      "analyze_code",
+      "execute_terminal",
+      "schedule_task",
+      "verify_app_browser_console",
+      "browser_open_url",
+      "browser_get_console_errors",
+      "browser_take_screenshot",
+      "browser_vision_audit"
+    ],
+    "research": [
+      "web_search",
+      "fetch_web_page",
+      "firecrawl",
+      "summarize_text"
+    ],
+    "analysis": [
+      "analyze_code",
+      "file_operation",
+      "verify_app_browser_console",
+      "browser_open_url",
+      "browser_get_console_errors",
+      "browser_take_screenshot",
+      "browser_vision_audit"
+    ],
+    "business": [
+      "generate_image",
+      "web_search",
+      "fetch_web_page",
+      "generate_presentation",
+      "generate_excel_sheet",
+      "read_excel_sheet",
+      "csv_sheet_operation",
+      "file_operation"
+    ]
+  },
+  "allowed_paths": [
+    "D:\\learning\\code\\website"
+  ],
+  "allowed_commands": [
+    "mkdir -p D:\\learning\\code\\website\\css D:\\learning\\code\\website\\js D:\\learning\\code\\website\\assets\\img D:\\learning\\code\\website\\assets\\icons",
+    "mkdir -p D:\\learning\\code\\website\\css D:\\learning\\code\\website\\js D:\\learning\\code\\website\\assets",
+    "mkdir -p D:\\learning\\code\\website\\minecraft_2d\\src",
+    "mkdir -p D:\\learning\\code\\website\\css D:\\learning\\code\\website\\js",
+    "mkdir -p D:\\learning\\code\\website-next",
+    "npm install next-themes lucide-react",
+    "dir /s /b D:\\learning\\code\\website",
+    "dir /s /b *.html",
+    "dir /s",
+    "dir /s /ad",
+    "dir /s /b index.html"
+  ],
+  "default_main_model": "gemma4:26b",
+  "default_code_model": "granite-code:20b",
+  "strict_coding_rules": {
+    "no_hardcoded_html": "STRICT PROJECT RULE: Never hardcode any HTML files or index.html templates in Python backend files. Code Agent must generate 100% of application files dynamically using LLM tools."
+  }
+}

@@ -613,6 +613,58 @@ class TestF4BusinessRoutingAndUISelector:
         orch = OrchestratorAgent()
         assert "Orchestrator" in orch.system_prompt
 
+    def test_t2_f4_06_routing_fix_something(self):
+        """Tier 2: User requests to 'fix' something route to analyze_and_fix."""
+        orch = OrchestratorAgent()
+        state = {
+            "messages": [],
+            "user_request": "please fix the connection timeout issue in the app",
+            "selected_agent": None,
+            "agent_response": None,
+            "final_response": None,
+            "context": {},
+            "session_id": "test_session",
+            "review_critique": None
+        }
+        res_state = orch._analyze_request(state)
+        assert res_state["selected_agent"] == "analyze_and_fix"
+
+    def test_t2_f4_07_code_agent_packaged_app_prompt_rules(self):
+        """Tier 2: CodeAgent prompt contains rules for packaged apps with Python backend and frontend."""
+        agent = specialized_agents.CodeAgent()
+        prompt = agent.system_prompt.lower()
+        assert "full packaged application mode" in prompt or "python backend" in prompt
+        assert "fastapi" in prompt or "flask" in prompt
+
+    def test_t2_f4_08_code_agent_cpp_raspberry_pi_prompt_rules(self):
+        """Tier 2: CodeAgent prompt contains rules for C++ and Raspberry Pi / embedded hardware."""
+        agent = specialized_agents.CodeAgent()
+        prompt = agent.system_prompt.lower()
+        assert "raspberry pi" in prompt
+        assert "c++" in prompt
+        assert "cmakelists.txt" in prompt or "makefile" in prompt
+
+    def test_t2_f4_09_code_agent_walkthrough_mandate(self):
+        """Tier 2: CodeAgent prompt contains mandatory WALKTHROUGH.md generation requirement."""
+        agent = specialized_agents.CodeAgent()
+        prompt = agent.system_prompt.lower()
+        assert "walkthrough.md" in prompt
+
+    def test_t2_f4_10_code_agent_game_mode_rules(self):
+        """Tier 2: CodeAgent prompt contains simple game mode rules using lightweight HTML/Canvas."""
+        agent = specialized_agents.CodeAgent()
+        prompt = agent.system_prompt.lower()
+        assert "simple game mode" in prompt or "canvas" in prompt
+
+    def test_t2_f4_11_robust_parser_code_block_auto_recovery(self):
+        """Tier 2: RobustReActParser auto-recovers raw code blocks into file_operation write actions."""
+        parser = specialized_agents.RobustReActParser()
+        raw_llm_text = "Here is the code for your app:\n```html\n<!DOCTYPE html><html><body><h1>Test App</h1></body></html>\n```"
+        action = parser.parse(raw_llm_text)
+        assert isinstance(action, specialized_agents.AgentAction)
+        assert action.tool == "file_operation"
+        assert "index.html" in action.tool_input
+
 
 # =====================================================================
 # Feature F5: Voice Transcription Endpoint (R3)

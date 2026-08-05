@@ -2,8 +2,12 @@
 Test script for AI Guide API
 """
 import asyncio
+import traceback
 import httpx
 
+import pytest
+
+@pytest.mark.asyncio
 async def test_health():
     """Test the health endpoint"""
     async with httpx.AsyncClient() as client:
@@ -16,6 +20,7 @@ async def test_health():
             print(f"Error: {e}")
             return False
 
+@pytest.mark.asyncio
 async def test_chat():
     """Test the chat endpoint"""
     async with httpx.AsyncClient(timeout=30.0) as client:

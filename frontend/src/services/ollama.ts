@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const API_BASE = "http://localhost:8000";
+export const API_BASE = (import.meta.env.VITE_API_BASE_URL !== undefined ? import.meta.env.VITE_API_BASE_URL : "").replace(/\/$/, "");
 axios.defaults.timeout = 300000; // 5-minute timeout for agent execution calls
 
 export interface Agent {
@@ -73,8 +73,20 @@ export const OllamaService = {
     return response.data;
   },
 
+  async testSingleAgent(payload: {
+    agent_id: string;
+    provider: string;
+    model: string;
+    api_key?: string;
+    thinking_level?: string;
+    prompt: string;
+  }): Promise<any> {
+    const response = await axios.post(`${API_BASE}/api/multi-agent/agents/test-single-agent`, payload);
+    return response.data;
+  },
+
   async getMultiAgentHealth(): Promise<any> {
-    const response = await axios.get(`${API_BASE}/api/multi-agent/agents/health`);
+    const response = await axios.get(`${API_BASE}/api/multi-agent/agents/health`, { timeout: 10000 });
     return response.data;
   },
 
@@ -93,7 +105,10 @@ export const OllamaService = {
     onEvent: (event: { type: string; agent?: string; content?: string; done: boolean }) => void,
     onError: (err: any) => void,
     context?: any,
-    thinkingLevel?: string
+    thinkingLevel?: string,
+    provider?: string,
+    model?: string,
+    apiKey?: string
   ): Promise<AbortController> {
     const controller = new AbortController();
     
@@ -106,7 +121,10 @@ export const OllamaService = {
         prompt,
         context,
         stream: true,
-        thinking_level: thinkingLevel || 'medium'
+        thinking_level: thinkingLevel || 'medium',
+        provider: provider || 'ollama',
+        model: model || undefined,
+        api_key: apiKey || undefined
       }),
       signal: controller.signal
     })
@@ -138,6 +156,10 @@ export const OllamaService = {
 
               try {
                 const data = JSON.parse(dataStr);
+                if (data && data.type === 'ping') {
+                  // Keep-alive heartbeat chunk to prevent socket drops
+                  continue;
+                }
                 onEvent(data);
               } catch (e) {
                 console.error('Error parsing SSE data:', e);
@@ -223,6 +245,30 @@ export const OllamaService = {
   },
   async deleteHub(hubId: string): Promise<any> {
     const response = await axios.delete(`${API_BASE}/api/multi-agent/hubs/${hubId}`);
+    return response.data;
+  },
+  async getHubWorkspace(hubId: string): Promise<any> {
+    const response = await axios.get(`${API_BASE}/api/multi-agent/hubs/${hubId}/workspace`);
+    return response.data;
+  },
+  async updateHubWorkspace(hubId: string, workspace: { mission: string; success_criteria: string[]; status: string }): Promise<any> {
+    const response = await axios.put(`${API_BASE}/api/multi-agent/hubs/${hubId}/workspace`, workspace);
+    return response.data;
+  },
+  async createHubTask(hubId: string, task: { title: string; description: string; assigned_role: string }): Promise<any> {
+    const response = await axios.post(`${API_BASE}/api/multi-agent/hubs/${hubId}/tasks`, task);
+    return response.data;
+  },
+  async prepareHubTaskRun(hubId: string, taskId: string): Promise<any> {
+    const response = await axios.post(`${API_BASE}/api/multi-agent/hubs/${hubId}/tasks/${taskId}/runs`);
+    return response.data;
+  },
+  async approveHubRun(hubId: string, runId: string): Promise<any> {
+    const response = await axios.post(`${API_BASE}/api/multi-agent/hubs/${hubId}/runs/${runId}/approve`);
+    return response.data;
+  },
+  async addHubMemory(hubId: string, memory: { content: string; category: string }): Promise<any> {
+    const response = await axios.post(`${API_BASE}/api/multi-agent/hubs/${hubId}/memory`, memory);
     return response.data;
   },
 
@@ -543,5 +589,3 @@ export const OllamaService = {
     return response.data.text ?? '';
   }
 };
-
-

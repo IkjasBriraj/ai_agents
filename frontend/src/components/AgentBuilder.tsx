@@ -11,7 +11,7 @@ interface BuilderProps {
 export const AgentBuilder: React.FC<BuilderProps> = ({ onAgentCreated }) => {
   const [step, setStep] = useState(1);
   const [availableModels, setAvailableModels] = useState<string[]>([
-    'granite4.1:8b', 'gemma4:31b-cloud', 'llama3', 'mistral'
+    'gemma4:26b', 'granite-code:20b', 'llama3', 'mistral'
   ]);
   const [formData, setFormData] = useState<Partial<Agent>>({
     name: '',

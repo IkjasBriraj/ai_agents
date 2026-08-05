@@ -36,6 +36,7 @@ import {
   Download,
   ExternalLink,
   Sparkles,
+  Brain,
 } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
@@ -43,6 +44,7 @@ import { SiriFluidOrb } from './SiriFluidOrb';
 import { AnimationSelector } from './AnimationSelector';
 import { ThinkingLevelSelector, type ThinkingLevel, getSavedThinkingLevel } from './ThinkingLevelSelector';
 import { playSiriActivationSound, playAgentProcessingPulse } from '@/lib/siriAudio';
+import { AgentTodoList, type TodoItem } from './AgentTodoList';
 
 
 
@@ -62,6 +64,7 @@ interface Message {
   total_tokens?: number;
   thinkingTokens?: string[];
   responseTokens?: string[];
+  thinkingProcess?: string;
   screenshots?: Array<{
     name: string;
     url: string;
@@ -103,6 +106,9 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
   const [showExactTokens, setShowExactTokens] = useState<boolean>(false);
   const [thinkingTokens, setThinkingTokens] = useState<string[]>([]);
   const [responseTokens, setResponseTokens] = useState<string[]>([]);
+  
+  // Live Agent To-Do List State
+  const [todoItems, setTodoItems] = useState<TodoItem[]>([]);
   
   // Interactive Controls
   const [mode, setMode] = useState<'orchestrated' | 'direct'>('orchestrated');
@@ -254,6 +260,52 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
   const [selectedPresentationModal, setSelectedPresentationModal] = useState<{ url: string; title?: string } | null>(null);
   const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>(getSavedThinkingLevel());
   const [activePlanContent, setActivePlanContent] = useState<{ planContent: string; planPath: string } | null>(null);
+
+  // Cloud LLM Provider State
+  const [isCloudModalOpen, setIsCloudModalOpen] = useState<boolean>(false);
+  const [cloudProvider, setCloudProvider] = useState<string>(() => localStorage.getItem('agentic_cloud_provider') || 'ollama');
+  const [selectedCloudModel, setSelectedCloudModel] = useState<string>(() => localStorage.getItem('agentic_cloud_model') || 'granite4.1:8b');
+  const [cloudApiKey, setCloudApiKey] = useState<string>(() => localStorage.getItem('agentic_cloud_api_key') || '');
+  const [installedOllamaModels, setInstalledOllamaModels] = useState<string[]>([]);
+
+  const fetchInstalledOllamaModels = async () => {
+    try {
+      const models = await OllamaService.getModels();
+      if (models && models.length > 0) {
+        const names = models.map((m: any) => m.name).filter(Boolean);
+        setInstalledOllamaModels(names);
+      } else {
+        const localRes = await OllamaService.getLocalModels();
+        if (localRes && localRes.status === 'success' && localRes.models?.length > 0) {
+          const names = localRes.models.map((m: any) => m.name).filter(Boolean);
+          setInstalledOllamaModels(names);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to fetch installed Ollama models", err);
+    }
+  };
+
+  useEffect(() => {
+    fetchInstalledOllamaModels();
+  }, []);
+
+  useEffect(() => {
+    if (isCloudModalOpen) {
+      fetchInstalledOllamaModels();
+    }
+  }, [isCloudModalOpen]);
+
+  const defaultOllamaModels = ['granite4.1:8b', 'gemma4:26b', 'llama3.3:70b', 'qwen2.5-coder:32b', 'deepseek-r1:14b', 'mistral-small:24b'];
+
+  const providerModelsMap: Record<string, string[]> = {
+    ollama: installedOllamaModels.length > 0 ? installedOllamaModels : defaultOllamaModels,
+    openai: ['gpt-4o', 'gpt-4o-mini', 'o3-mini', 'o1', 'opus-4.8'],
+    anthropic: ['claude-sonnet-4-6', 'claude-opus-4-8', 'claude-haiku-4-5-20251001', 'claude-opus-5', 'claude-sonnet-5'],
+    ibm: ['granite4.1:8b', 'granite-3-8b-instruct', 'granite-3-2b-instruct', 'granite-20b-code'],
+    gemini: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash'],
+    deepseek: ['deepseek-chat', 'deepseek-reasoner', 'deepseek-coder']
+  };
 
   const handlePermissionResponse = async (granted: boolean) => {
     if (!pendingPermissionRequest) return;
@@ -600,6 +652,7 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
     setThinkingStream('');
     setThinkingTokens([]);
     setResponseTokens([]);
+    setTodoItems([]);
 
     if (mode === 'direct') {
       // Direct agent interaction (Bypasses orchestrator)
@@ -618,7 +671,13 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
       }
 
       try {
-        const response = await OllamaService.chatDirectAgent(selectedDirectAgent, userText, undefined, thinkingLevel);
+        const directContext = {
+          provider: cloudProvider,
+          model: selectedCloudModel,
+          api_key: cloudApiKey,
+          thinking_level: thinkingLevel
+        };
+        const response = await OllamaService.chatDirectAgent(selectedDirectAgent, userText, directContext, thinkingLevel);
         
         const finalContent = typeof response === 'string' ? response : (response?.response || response?.result || response?.content || response?.output || 'Task completed successfully.');
         const toolsParsed = parseToolExecutions(finalContent, selectedDirectAgent);
@@ -910,6 +969,22 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
                   return newMsgs;
                 });
               }
+            } else if (event.type === 'todo_list_update') {
+              const items = event.items || event.todos || event.todo_list || event.todoItems || event.data || (event.item ? [event.item] : []);
+              if (Array.isArray(items) && items.length > 0) {
+                setTodoItems(items);
+              } else if (event.item) {
+                const item = event.item;
+                setTodoItems(prev => {
+                  const idx = prev.findIndex(t => t.id === item.id);
+                  if (idx !== -1) {
+                    const copy = [...prev];
+                    copy[idx] = { ...copy[idx], ...item };
+                    return copy;
+                  }
+                  return [...prev, item];
+                });
+              }
             } else if (event.type === 'thinking' && event.content) {
               // Accumulate agent reasoning tokens for live display
               localThinkingTokens.push(event.content);
@@ -929,6 +1004,9 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
                   promptTokens = event.prompt_tokens;
                   completionTokens = event.completion_tokens;
                   totalTokens = event.total_tokens;
+                }
+                if (localThinkingTokens.length > 0) {
+                  updateLastAssistantMessage({ thinkingProcess: localThinkingTokens.join('') });
                 }
                 finalizeResponse();
               } else {
@@ -951,18 +1029,26 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
           (err) => {
             console.error("Streaming error:", err);
             clearTimeout(safetyTimeout);
-            setMessages(prev => [...prev, {
-              role: 'assistant',
-              content: 'Stream processing error occurred. Please verify backend connection.',
-              agentUsed: undefined
-            }]);
-            setIsTyping(false);
-            setRoutingStep(0);
-            setActiveRoutingAgent(null);
-            setActiveTool(null);
+            if (hasStreamedResponse || fullResponseText.trim().length > 0) {
+              finalizeResponse();
+            } else {
+              const errMsg = err?.message ? `Stream processing notice: ${err.message}` : 'Stream processing error occurred. Please verify backend connection.';
+              setMessages(prev => [...prev, {
+                role: 'assistant',
+                content: errMsg,
+                agentUsed: undefined
+              }]);
+              setIsTyping(false);
+              setRoutingStep(0);
+              setActiveRoutingAgent(null);
+              setActiveTool(null);
+            }
           },
           undefined,
-          thinkingLevel
+          thinkingLevel,
+          cloudProvider,
+          selectedCloudModel,
+          cloudApiKey
         );
       } catch (err) {
         console.error("Failed to connect", err);
@@ -1477,17 +1563,17 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
 
         {/* PLAYGROUND RIGHT PANEL (CHAT AND OUTPUTS) */}
         <div className="lg:col-span-2 space-y-6">
-          <Card className={cn("carbon-card flex flex-col min-h-[600px] max-h-[700px] relative transition-all duration-500", (isTyping || isRecording) && "siri-fluid-border-frame shadow-[0_0_30px_rgba(168,85,247,0.35)]")}>
-            <CardHeader className="pb-3 border-b border-border/20 flex flex-row items-center justify-between">
+          <Card className={cn("carbon-card flex flex-col min-h-[780px] lg:min-h-[840px] relative transition-all duration-500 shadow-xl", (isTyping || isRecording) && "siri-fluid-border-frame shadow-[0_0_30px_rgba(168,85,247,0.35)]")}>
+            <CardHeader className="pb-4 border-b border-border/30 flex flex-col xl:flex-row items-start xl:items-center justify-between gap-4">
               <div>
-                <CardTitle className="text-xl font-light">Interactive Hub Playground</CardTitle>
-                <p className="text-xs text-muted-foreground mt-1">
+                <CardTitle className="text-xl sm:text-2xl font-light tracking-tight whitespace-nowrap">Interactive Hub Playground</CardTitle>
+                <p className="text-xs text-muted-foreground mt-1 font-mono">
                   {mode === 'orchestrated' 
                     ? "Coordinated by Main Orchestrator Agent via LangGraph" 
                     : `Direct communication with ${selectedDirectAgent.toUpperCase()} Agent`}
                 </p>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-3 w-full xl:w-auto justify-start xl:justify-end">
                 {activePlanContent && (
                   <Button
                     variant="outline"
@@ -1496,12 +1582,21 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
                       setEditedPlanContent(activePlanContent.planContent);
                       setIsPlanModalOpen(true);
                     }}
-                    className="h-8 font-mono text-[10px] uppercase gap-1.5 border-ibm-blue/40 text-ibm-blue hover:bg-ibm-blue/10 animate-in fade-in duration-200"
+                    className="h-10 font-mono text-xs uppercase gap-1.5 border-ibm-blue/40 text-ibm-blue hover:bg-ibm-blue/10 animate-in fade-in duration-200"
                   >
-                    <FileText className="w-3.5 h-3.5" />
+                    <FileText className="w-4 h-4" />
                     <span className="hidden sm:inline">Implementation Plan</span>
                   </Button>
                 )}
+                <Button
+                  variant="outline"
+                  onClick={() => setIsCloudModalOpen(true)}
+                  className="h-10 sm:h-11 font-mono text-xs sm:text-sm uppercase gap-2 border-emerald-500/60 text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20 px-4 font-bold shadow-md transition-all animate-in fade-in duration-200"
+                >
+                  <Globe className="w-4 h-4 sm:w-5 sm:h-5 text-emerald-400" />
+                  <span className="hidden sm:inline">Provider: <strong className="text-emerald-300 font-black">{cloudProvider.toUpperCase()}</strong> <span className="text-emerald-400/90 font-normal">({selectedCloudModel})</span></span>
+                  <span className="sm:hidden">{cloudProvider.toUpperCase()}</span>
+                </Button>
                 <ThinkingLevelSelector variant="dropdown" value={thinkingLevel} onChange={setThinkingLevel} />
                 <span className="text-[10px] font-mono uppercase text-muted-foreground hidden sm:inline">
                   {isRecording ? 'Agentic Voice Core' : isTyping ? 'Agentic Fluid Core' : 'Agentic Core Intelligence'}
@@ -1512,6 +1607,9 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
             
             {/* CHAT LOGS */}
             <div className="flex-1 overflow-y-auto p-6 space-y-6 font-sans text-base min-h-[350px]">
+              {/* Live Executive Agent To-Do List Widget */}
+              <AgentTodoList todoItems={todoItems} />
+
               {messages.length === 0 && (
                 <div className="h-full flex flex-col justify-center items-center text-center py-20 opacity-70">
                   <div className="p-4 border border-dashed rounded-none border-border mb-4">
@@ -1663,6 +1761,29 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
                         </div>
                       )}
 
+
+                      {/* --- Collapsible Dropdown for Agent Thinking Process --- */}
+                      {!isUser && msg.thinkingProcess && (
+                        <div className="mt-4 pt-3 border-t border-border/30">
+                          <button 
+                            onClick={() => setOpenDropdownIdx(openDropdownIdx === (idx + 1000) ? null : (idx + 1000))}
+                            className="font-mono text-xs text-primary/90 hover:text-primary flex items-center gap-1.5 focus:outline-none transition-colors"
+                          >
+                            {openDropdownIdx === (idx + 1000) ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                            <Brain className="w-3.5 h-3.5 text-primary" />
+                            {openDropdownIdx === (idx + 1000) ? "Hide Agent Thinking Process" : "View Agent Thinking Process"}
+                          </button>
+
+                          {openDropdownIdx === (idx + 1000) && (
+                            <div className="mt-2.5 p-3.5 bg-primary/5 border border-primary/20 font-mono text-xs text-muted-foreground whitespace-pre-wrap leading-relaxed max-h-[300px] overflow-y-auto animate-in slide-in-from-top-2 duration-200">
+                              <div className="text-[9px] text-primary/70 uppercase tracking-wider font-bold mb-1.5 border-b border-primary/10 pb-1">
+                                🧠 Deep Reasoning Trace
+                              </div>
+                              {msg.thinkingProcess}
+                            </div>
+                          )}
+                        </div>
+                      )}
 
                       {msg.total_tokens !== undefined && msg.total_tokens > 0 && (
                         <div className="mt-4 pt-2 border-t border-border/20 flex gap-4 text-[10px] font-mono text-muted-foreground uppercase tracking-wider animate-in fade-in duration-300">
@@ -2105,14 +2226,14 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
                   </Button>
                 )}
               </div>
-              <div className="flex flex-col sm:flex-row justify-between items-center mt-3 gap-2 text-[10px] font-mono text-muted-foreground">
-                <div className="flex items-center gap-3">
+              <div className="flex flex-col md:flex-row justify-between items-start md:items-center mt-3.5 gap-2.5 text-xs font-mono text-muted-foreground">
+                <div className="flex flex-wrap items-center gap-3">
                   <span>Press Enter to send, Shift+Enter for new line · 🎤 Voice supported</span>
                   <ThinkingLevelSelector variant="compact" value={thinkingLevel} onChange={setThinkingLevel} />
                 </div>
-                <span className="flex items-center gap-1.5">
-                  <FolderCheck className="w-3.5 h-3.5 text-accent" />
-                  File-writer Workspace Target: <strong className="text-foreground">D:\learning\code\website</strong>
+                <span className="flex items-center gap-1.5 text-xs text-emerald-400/90 font-medium">
+                  <FolderCheck className="w-4 h-4 text-emerald-400 shrink-0" />
+                  File-writer Workspace Target: <strong className="text-foreground font-mono">D:\learning\code\website</strong>
                 </span>
               </div>
             </div>
@@ -2301,6 +2422,99 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
               title="Presentation Deck"
               className="w-full h-full border-0 bg-black"
             />
+          </div>
+        </div>
+      )}
+
+      {/* Cloud & Local LLM Provider Settings Modal */}
+      {isCloudModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-emerald-500/50 rounded-2xl max-w-2xl w-full p-8 space-y-6 shadow-2xl animate-in zoom-in-95 duration-200 text-foreground">
+            <div className="flex justify-between items-center border-b border-border/40 pb-4">
+              <div className="flex items-center gap-3">
+                <Globe className="w-7 h-7 text-emerald-400" />
+                <div>
+                  <h3 className="font-bold text-xl sm:text-2xl tracking-tight">Cloud & Local LLM Provider Settings</h3>
+                  <p className="text-xs text-muted-foreground mt-0.5 font-mono">Configure your active model engine and local/cloud credentials</p>
+                </div>
+              </div>
+              <button onClick={() => setIsCloudModalOpen(false)} className="text-muted-foreground hover:text-foreground p-1 rounded-lg hover:bg-white/10 transition-colors">
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+
+            <div className="space-y-5 font-mono text-sm">
+              <div>
+                <label className="block text-muted-foreground mb-2 font-bold uppercase tracking-wider text-xs sm:text-sm">1. Select Provider</label>
+                <select 
+                  value={cloudProvider}
+                  onChange={(e) => {
+                    const prov = e.target.value;
+                    setCloudProvider(prov);
+                    const models = providerModelsMap[prov] || [];
+                    if (models.length > 0) setSelectedCloudModel(models[0]);
+                  }}
+                  className="w-full bg-slate-950 border border-border/80 p-3.5 rounded-xl text-foreground focus:outline-none focus:border-emerald-500 text-sm sm:text-base font-sans font-medium"
+                >
+                  <option value="ollama">OLLAMA (Local Default)</option>
+                  <option value="openai">OPENAI (Cloud - GPT-4o, Opus 4.8)</option>
+                  <option value="anthropic">ANTHROPIC (Cloud - Claude 3.7 / 3.5)</option>
+                  <option value="ibm">IBM GRANITE (Cloud / Local)</option>
+                  <option value="gemini">GOOGLE GEMINI (Cloud - Gemini 2.5)</option>
+                  <option value="deepseek">DEEPSEEK (Cloud - DeepSeek-R1 / V3)</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-muted-foreground mb-2 font-bold uppercase tracking-wider text-xs sm:text-sm">
+                  2. Select Model {cloudProvider === 'ollama' && installedOllamaModels.length > 0 ? `(${installedOllamaModels.length} Installed Locally)` : ''}
+                </label>
+                <select 
+                  value={selectedCloudModel}
+                  onChange={(e) => setSelectedCloudModel(e.target.value)}
+                  className="w-full bg-slate-950 border border-border/80 p-3.5 rounded-xl text-foreground focus:outline-none focus:border-emerald-500 text-sm sm:text-base font-sans font-medium"
+                >
+                  {(providerModelsMap[cloudProvider] || []).map(m => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+              </div>
+
+              {cloudProvider !== 'ollama' && (
+                <div>
+                  <label className="block text-muted-foreground mb-2 font-bold uppercase tracking-wider text-xs sm:text-sm">3. API Key ({cloudProvider.toUpperCase()})</label>
+                  <input 
+                    type="password"
+                    placeholder={`Enter your ${cloudProvider.toUpperCase()} API Key...`}
+                    value={cloudApiKey}
+                    onChange={(e) => setCloudApiKey(e.target.value)}
+                    className="w-full bg-slate-950 border border-border/80 p-3.5 rounded-xl text-foreground focus:outline-none focus:border-emerald-500 text-sm font-sans"
+                  />
+                  <p className="text-xs text-muted-foreground mt-1.5 font-sans">Your API key is securely saved in local storage and sent directly to agent API calls.</p>
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-3 pt-5 border-t border-border/40">
+              <Button 
+                variant="outline" 
+                onClick={() => setIsCloudModalOpen(false)}
+                className="h-11 px-5 text-sm font-semibold rounded-xl"
+              >
+                Cancel
+              </Button>
+              <Button 
+                onClick={() => {
+                  localStorage.setItem('agentic_cloud_provider', cloudProvider);
+                  localStorage.setItem('agentic_cloud_model', selectedCloudModel);
+                  localStorage.setItem('agentic_cloud_api_key', cloudApiKey);
+                  setIsCloudModalOpen(false);
+                }}
+                className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold h-11 px-7 text-sm rounded-xl shadow-lg"
+              >
+                Save Settings
+              </Button>
+            </div>
           </div>
         </div>
       )}

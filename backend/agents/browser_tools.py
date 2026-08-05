@@ -29,6 +29,10 @@ def browser_open_url(url: str) -> str:
         browser = get_browser_service()
         
         result = browser.launch(url)
+        if isinstance(result, str):
+            return f"Error: Failed to open browser at {url}: {result}"
+        if not isinstance(result, dict):
+            result = {}
         
         if result.get("status") == "error":
             return f"Error: Failed to open browser at {url}: {result.get('error', 'Unknown error')}"
@@ -41,7 +45,7 @@ def browser_open_url(url: str) -> str:
         
         summary = (
             f"Browser opened successfully.\n"
-            f"- URL: {result['url']}\n"
+            f"- URL: {result.get('url', url)}\n"
             f"- Page Title: {result.get('title', 'N/A')}\n"
             f"- Console Errors: {result.get('console_errors', 0)}\n"
             f"- Console Warnings: {result.get('console_warnings', 0)}\n"
@@ -175,6 +179,11 @@ def browser_vision_audit(prompt: str = "") -> str:
                 }
             )
         
+        if isinstance(vision_result, str):
+            return f"### 👁️ Gemma4:26b Vision UI Audit\n\n{vision_result}"
+        if not isinstance(vision_result, dict):
+            vision_result = {}
+            
         report = vision_result.get("report", "No vision report generated.")
         has_defects = vision_result.get("has_visual_defects", False)
         

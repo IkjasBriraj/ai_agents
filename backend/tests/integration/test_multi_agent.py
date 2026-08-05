@@ -3,6 +3,7 @@ Test script for Multi-Agent System
 Run this to test the orchestrator and specialized agents
 """
 
+import os
 import asyncio
 import sys
 

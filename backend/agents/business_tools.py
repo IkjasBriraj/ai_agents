@@ -53,90 +53,57 @@ def generate_presentation(
                     slides = []
 
         if not slides or not isinstance(slides, list):
-            slides = [
-                {
-                    "type": "title",
-                    "title": title,
-                    "subtitle": subtitle or "Executive Presentation Deck"
-                },
-                {
-                    "type": "content",
-                    "title": "Executive Summary & Market Opportunity",
-                    "bullets": [
-                        "Key Strategic Objectives & Core Value Proposition",
-                        "Target Audience & Industry Growth Trends",
-                        "Competitive Advantage & Differentiation"
-                    ]
-                },
-                {
-                    "type": "metrics",
-                    "title": "Key Financial & Growth Metrics",
-                    "metrics": [
-                        {"label": "Target Revenue", "value": "$1.5M"},
-                        {"label": "Gross Margin", "value": "65%"},
-                        {"label": "Payback Period", "value": "8 Months"}
-                    ]
-                },
-                {
-                    "type": "content",
-                    "title": "Strategic Roadmap & Next Steps",
-                    "bullets": [
-                        "Phase 1: Core Setup & Infrastructure Deployment",
-                        "Phase 2: Product Launch & Customer Acquisition",
-                        "Phase 3: Operational Scaling & Partnership Network"
-                    ]
-                }
-            ]
+            title_lower = title.lower()
+            if any(kw in title_lower for kw in ["space", "cosmos", "universe", "astronomy", "planet", "galaxy", "star", "mars"]):
+                slides = [
+                    {"type": "title", "title": title, "subtitle": subtitle or "An Exploration of the Cosmos & Deep Space", "image_prompt": "A futuristic blueprint schematic of a space station orbiting a blue gas giant planet, 8k"},
+                    {"type": "content", "title": "The Solar System & Planetary Dynamics", "bullets": ["Inner Terrestrial Planets (Mercury, Venus, Earth, Mars)", "Gas & Ice Giants (Jupiter, Saturn, Uranus, Neptune)", "Kuiper Belt and Oort Cloud Boundaries"]},
+                    {"type": "pipeline", "title": "The Deep Space Pipeline", "steps": ["The Launch: Earth Orbit Insertion", "The Mission: Interplanetary Transit", "The Arrival: Surface Landing & Exploration"]},
+                    {"type": "metrics", "title": "Cosmic Scale & Key Metrics", "metrics": [{"label": "Observable Universe", "value": "93B Light Yrs"}, {"label": "Milky Way Stars", "value": "100B+"}, {"label": "JWST Range", "value": "13.5B Yrs Back"}]},
+                    {"type": "split_image", "title": "Space Exploration Frontiers", "subtitle": "From Digital Blueprints to Cosmic Reality", "bullets": ["Apollo & Artemis Lunar Base Infrastructure", "Robotic Probes: Mars Rovers & JWST Deep Field", "Next-Gen Propulsion: Fusion & Ion Thrusters"], "image_prompt": "A high-tech 3D printer extruding a blue geometric spacecraft model with technical blueprint callouts, photorealistic 8k"}
+                ]
+            elif any(kw in title_lower for kw in ["ai", "agent", "tech", "code", "software", "machine learning", "robot", "senioragent", "orchestrator"]):
+                slides = [
+                    {"type": "title", "title": title, "subtitle": subtitle or "The Local-First Agentic OS", "image_prompt": "A technical blueprint diagram showing system root folder tree connected to modular UI wireframes, blueprint style 8k"},
+                    {"type": "pipeline", "title": "The Local Engine Pipeline", "steps": ["The Brain: Ollama running local LLMs on Port 11434", "The Backend: Python & FastAPI handling logic on Port 8000", "The Frontend: Node.js & React powering UI on Port 5173"]},
+                    {"type": "split_image", "title": "The Future of Accessible Autonomy", "subtitle": "Bridging Multi-Agent Workflows & Senior Accessibility", "bullets": ["Digital Accessibility: Dignity and deliberate design", "Total User Control: Full local sandbox execution", "Next-Gen Agentic AI: Autonomous code generation"], "image_prompt": "A 3D hexagonal blue pillar labeled SeniorAgent flanked by digital accessibility boxes and agentic AI tree diagram, blueprint 8k"}
+                ]
+            else:
+                slides = [
+                    {"type": "title", "title": title, "subtitle": subtitle or "Executive Strategy & Analysis Deck", "image_prompt": "A modern technical blueprint graphic showing interconnected business strategy nodes and analytics charts, 8k"},
+                    {"type": "content", "title": "Executive Summary & Core Objectives", "bullets": ["Strategic Vision and Market Opportunities", "Target Audience & Growth Drivers", "Competitive Advantage & Differentiation"]},
+                    {"type": "metrics", "title": "Key Performance Indicators", "metrics": [{"label": "Target Growth", "value": "150%"}, {"label": "Efficiency Gain", "value": "45%"}, {"label": "Payback Period", "value": "6 Months"}]},
+                    {"type": "split_image", "title": "Strategic Execution & Growth", "subtitle": "From Blueprint to Production Execution", "bullets": ["Phase 1: Foundation & Core Infrastructure", "Phase 2: Market Deployment & User Scaling", "Phase 3: Operational Optimization & Growth"], "image_prompt": "A high-tech robotic arm 3D printing a precision mechanical gear on a blueprint grid with technical callout annotations, 8k"}
+                ]
 
-        # Strict mandate: Enforce minimum 4 slides and maximum 30 slides
-        if len(slides) > 30:
-            slides = slides[:30]
-        elif len(slides) < 4:
-            fallback_slides = [
-                {
-                    "type": "title",
-                    "title": title,
-                    "subtitle": subtitle or "Executive Presentation Deck"
-                },
-                {
-                    "type": "content",
-                    "title": "Executive Summary & Market Analysis",
-                    "bullets": [
-                        "Key Strategic Objectives and Market Opportunity",
-                        "Target Demographic and Customer Acquisition Strategy",
-                        "Competitive Landscape and Growth Drivers"
-                    ]
-                },
-                {
-                    "type": "metrics",
-                    "title": "Key Performance Metrics",
-                    "metrics": [
-                        {"label": "Projected Growth", "value": "150%"},
-                        {"label": "Target Return", "value": "3.5x"},
-                        {"label": "Efficiency", "value": "92%"}
-                    ]
-                },
-                {
-                    "type": "content",
-                    "title": "Strategic Roadmap & Execution Plan",
-                    "bullets": [
-                        "Phase 1: Core Setup and Infrastructure Deployment",
-                        "Phase 2: Product Launch and Market Penetration",
-                        "Phase 3: Scale Operations and Expand Reach"
-                    ]
-                }
-            ]
-            for s in fallback_slides:
-                if len(slides) >= 4:
-                    break
-                # Only append fallback slide if title doesn't already exist
-                if not any(existing.get("title") == s.get("title") for existing in slides):
-                    slides.append(s)
+        # Process automated image generation for slides with image_prompt specifications
+        from .image_pipeline import generate_image_tool
+        for idx, s in enumerate(slides):
+            img_prompt = s.get("image_prompt")
+            if img_prompt and not s.get("image_path"):
+                try:
+                    # Stream progress notification
+                    ctx = current_agent_context.get()
+                    if ctx and "queue" in ctx and "loop" in ctx:
+                        ctx["loop"].call_soon_threadsafe(
+                            ctx["queue"].put_nowait,
+                            {"type": "thinking", "content": f"\n🎨 Generating slide {idx+1} image: '{img_prompt[:60]}...'...\n"}
+                        )
+                    img_name = f"{safe_name}_slide_{idx+1}"
+                    img_res = generate_image_tool(prompt=img_prompt, filename=img_name)
+                    
+                    # Extract saved image path
+                    generated_img_path = os.path.join(AGENT_WORKSPACE_DIR, "_generated_images", f"{img_name}.png")
+                    if os.path.exists(generated_img_path):
+                        s["image_path"] = generated_img_path
+                except Exception as img_err:
+                    logger.error("Error generating slide image: %s", img_err)
 
         spec = {
             "title": title,
             "subtitle": subtitle,
             "author": "Business Agent AI",
+            "theme_style": "notebooklm",
             "theme_color": theme_color,
             "slides": slides
         }
@@ -156,14 +123,15 @@ def generate_presentation(
                 ctx["queue"].put_nowait,
                 {
                     "type": "terminal_output",
-                    "content": f"[Presentation Deck Generated]: {safe_name}.pptx ({len(slides)} slides) -- Interactive preview: {safe_name}.html",
+                    "content": f"[NotebookLM Presentation Generated]: {safe_name}.pptx ({len(slides)} slides) -- Interactive preview: {safe_name}.html",
                     "done": False
                 }
             )
 
         report = [
-            f"### [Presentation Deck Generated Successfully]",
+            f"### 🚀 [NotebookLM Presentation Deck Generated Successfully]",
             f"- **Title**: {title}",
+            f"- **Style**: NotebookLM Technical Blueprint Layout",
             f"- **Slides Count**: {len(slides)}",
             f"- **PowerPoint File (.pptx)**: `{pptx_path}`",
             f"- **Download URL (.pptx)**: `{pptx_url}`",

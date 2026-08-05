@@ -8,6 +8,7 @@ import os
 import time
 import json
 import asyncio
+from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends
 from fastapi.staticfiles import StaticFiles
@@ -29,8 +30,12 @@ from fastapi import Depends
 from ai_guide import create_guide_router, AIGuideConfig
 
 # Import Multi-Agent System
-from agents.api import create_multi_agent_router
-from agents.config import DEFAULT_MAIN_MODEL
+try:
+    from app.api.v1.agents import create_multi_agent_router
+    from app.core.config import DEFAULT_MAIN_MODEL
+except ImportError:
+    from agents.api import create_multi_agent_router
+    from agents.config import DEFAULT_MAIN_MODEL
 
 app = FastAPI(title="SeniorAgent Backend")
 
@@ -48,16 +53,82 @@ async def shutdown_event():
     scheduler = get_scheduler()
     await scheduler.stop()
 
-# Enable CORS for React frontend
+cors_origins = ["*"]
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-OLLAMA_URL = "http://localhost:11434"
+@app.options("/{full_path:path}")
+async def options_handler(full_path: str):
+    from fastapi.responses import Response
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "*",
+            "Access-Control-Allow-Headers": "*",
+        }
+    )
+
+OLLAMA_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
+
+
+@app.get("/health")
+async def application_health():
+    """Report readiness of the local services required by the UI."""
+    components: Dict[str, Dict[str, Any]] = {
+        "api": {"status": "healthy"},
+        "database": {"status": "healthy"},
+        "scheduler": {"status": "unknown"},
+        "ollama": {"status": "unknown", "url": OLLAMA_URL},
+    }
+
+    try:
+        async for db in get_db():
+            await db.execute(select(1))
+    except Exception as exc:
+        components["database"] = {"status": "unhealthy", "message": str(exc)}
+
+    try:
+        from agents.scheduler import get_scheduler
+        scheduler = get_scheduler()
+        components["scheduler"] = {
+            "status": "healthy" if scheduler._running else "stopped"
+        }
+    except Exception as exc:
+        components["scheduler"] = {"status": "unhealthy", "message": str(exc)}
+
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            response = await client.get(f"{OLLAMA_URL}/api/tags")
+            response.raise_for_status()
+            model_count = len(response.json().get("models", []))
+            components["ollama"] = {
+                "status": "healthy",
+                "url": OLLAMA_URL,
+                "model_count": model_count,
+            }
+    except Exception:
+        components["ollama"] = {
+            "status": "unavailable",
+            "url": OLLAMA_URL,
+            "message": "Start Ollama and pull a supported model to enable conversations.",
+        }
+
+    database_ready = components["database"]["status"] == "healthy"
+    ollama_ready = components["ollama"]["status"] == "healthy"
+    overall_status = "healthy" if database_ready and ollama_ready else "limited" if database_ready else "unhealthy"
+
+    return {
+        "status": overall_status,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "components": components,
+    }
 
 class Agent(BaseModel):
     id: str
@@ -372,4 +443,3 @@ if os.path.exists(frontend_dist):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000, timeout_keep_alive=300, timeout_graceful_shutdown=30)
-

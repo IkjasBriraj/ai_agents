@@ -3,10 +3,13 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy import create_engine
 import os
 
+STORAGE_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "storage"))
+os.makedirs(STORAGE_DIR, exist_ok=True)
+
 if os.environ.get("TESTING") == "true":
-    DATABASE_PATH = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "test_agent.db"))
+    DATABASE_PATH = os.path.join(STORAGE_DIR, "test_agent.db")
 else:
-    DATABASE_PATH = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "senior_agent.db"))
+    DATABASE_PATH = os.path.join(STORAGE_DIR, "senior_agent.db")
 
 ASYNC_DATABASE_URL = f"sqlite+aiosqlite:///{DATABASE_PATH}"
 SYNC_DATABASE_URL = f"sqlite:///{DATABASE_PATH}"

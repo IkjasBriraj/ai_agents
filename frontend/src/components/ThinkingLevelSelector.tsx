@@ -26,7 +26,7 @@ export const THINKING_LEVELS: ThinkingLevelConfig[] = [
     icon: Zap,
     badgeColor: 'bg-amber-500/20 text-amber-300 border-amber-500/40',
     activeColor: 'bg-amber-500 text-black font-semibold',
-    tokenBudget: '1k tokens',
+    tokenBudget: '5k tokens',
     description: 'Fast direct responses. Minimal reasoning overhead, ideal for quick edits or simple queries.',
   },
   {
@@ -183,11 +183,11 @@ export const ThinkingLevelSelector: React.FC<ThinkingLevelSelectorProps> = ({
         <button
           type="button"
           onClick={() => setIsOpen(!isOpen)}
-          className="px-3 py-1.5 bg-card/90 border border-border hover:border-primary/50 rounded-lg text-xs font-mono flex items-center gap-2 shadow-sm transition-all text-foreground"
+          className="h-10 sm:h-11 px-3.5 py-2 bg-card/90 border border-border hover:border-primary/50 rounded-lg text-xs sm:text-sm font-mono flex items-center gap-2 shadow-sm transition-all text-foreground font-bold"
         >
-          <IconComponent className="w-3.5 h-3.5 text-purple-400" />
-          <span className="font-semibold">{currentConfig.shortLabel}</span>
-          <ChevronDown className="w-3 h-3 text-muted-foreground ml-1" />
+          <IconComponent className="w-4 h-4 text-purple-400" />
+          <span>{currentConfig.shortLabel}</span>
+          <ChevronDown className="w-4 h-4 text-muted-foreground ml-1" />
         </button>
 
         {isOpen && (

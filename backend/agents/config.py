@@ -18,15 +18,24 @@ VISION_MODEL = "gemma4:26b"
 # Documents directory for presentations and spreadsheets
 DOCUMENTS_DIR = os.path.join(AGENT_WORKSPACE_DIR, "_documents")
 
-# Ensure the workspace, screenshots, and documents directories exist
+# Generated images directory
+IMAGE_OUTPUT_DIR = os.path.join(AGENT_WORKSPACE_DIR, "_generated_images")
+
+# Default image generation model settings (SDXL 1024x1024)
+DEFAULT_IMAGE_MODEL = os.environ.get("IMAGE_MODEL", "stabilityai/stable-diffusion-xl-base-1.0")
+DEFAULT_IMAGE_WIDTH = int(os.environ.get("IMAGE_WIDTH", "1024"))
+DEFAULT_IMAGE_HEIGHT = int(os.environ.get("IMAGE_HEIGHT", "1024"))
+
+# Ensure the workspace, screenshots, documents, and image directories exist
 os.makedirs(AGENT_WORKSPACE_DIR, exist_ok=True)
 os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
 os.makedirs(DOCUMENTS_DIR, exist_ok=True)
+os.makedirs(IMAGE_OUTPUT_DIR, exist_ok=True)
 
 # Safety settings
 ALLOWED_EXTENSIONS = [
-    '.py', '.js', '.ts', '.jsx', '.tsx', '.html', '.css', '.scss',
-    '.json', '.yaml', '.yml', '.md', '.txt', '.env', '.gitignore',
+    '.py', '.js', '.ts', '.jsx', '.tsx', '.mjs', '.cjs', '.html', '.css', '.scss', '.pcss',
+    '.json', '.yaml', '.yml', '.md', '.txt', '.env', '.gitignore', '.lock',
     '.sql', '.sh', '.bat', '.ps1', '.xml', '.toml', '.ini',
     '.vue', '.svelte', '.php', '.java', '.c', '.cpp', '.h',
     '.go', '.rs', '.rb', '.swift', '.kt', '.dart', '.csv',
@@ -65,8 +74,9 @@ def is_safe_path(path: str) -> bool:
             
         abs_path_norm = norm_case(abs_path)
         
-        # Combine configured allowed paths with workspace and current working directory
-        all_allowed = list(allowed_paths or []) + [AGENT_WORKSPACE_DIR, os.getcwd()]
+        # Combine configured allowed paths with workspace directory
+        configured = [p for p in (allowed_paths or []) if p and p.strip()]
+        all_allowed = configured if configured else [AGENT_WORKSPACE_DIR]
         
         for allowed in all_allowed:
             if not allowed:
@@ -110,11 +120,11 @@ def is_allowed_extension(filename: str) -> bool:
     return ext in ALLOWED_EXTENSIONS or ext == ''
 
 # Model configurations
-DEFAULT_MAIN_MODEL = "granite4.1:8b"
-DEFAULT_CODE_MODEL = "granite4.1:8b"
+DEFAULT_MAIN_MODEL = "gemma4:26b"
+DEFAULT_CODE_MODEL = "granite-code:20b"
 
 # Agent Mode configuration
-AGENT_MODE_MODEL = "granite4.1:8b"
+AGENT_MODE_MODEL = "granite-code:20b"
 OLLAMA_KEEP_ALIVE = "1h"
 CLAUDE_CODE_MAX_TURNS = 10
 CLAUDE_CODE_TIMEOUT = 120  # seconds

@@ -9,6 +9,7 @@ import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 import { OllamaService } from '@/services/ollama';
 import { AgentModeToolStep } from './AgentModeToolStep';
+import { AgentTodoList, type TodoItem } from './AgentTodoList';
 
 interface AgentModePanelProps {
   currentPath: string;
@@ -38,6 +39,7 @@ export function AgentModePanel({ currentPath, selectedFile, fileContent, onFileC
   const [isStreaming, setIsStreaming] = useState(false);
   const [status, setStatus] = useState<{claude_code_available: boolean; ollama_model: string; mode: string} | null>(null);
   const [abortController, setAbortController] = useState<AbortController | null>(null);
+  const [todoItems, setTodoItems] = useState<TodoItem[]>([]);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const sessionId = 'default';
@@ -62,6 +64,7 @@ export function AgentModePanel({ currentPath, selectedFile, fileContent, onFileC
     try {
       await OllamaService.clearAgentModeHistory(sessionId);
       setMessages([]);
+      setTodoItems([]);
     } catch (err) {
       console.error('Failed to clear history', err);
     }
@@ -72,6 +75,23 @@ export function AgentModePanel({ currentPath, selectedFile, fileContent, onFileC
   }, [messages, isStreaming]);
 
   const handleStreamEvent = (data: any) => {
+    if (data.type === 'todo_list_update') {
+      const items = data.items || data.todos || data.todo_list || data.todoItems || data.data || (data.item ? [data.item] : []);
+      if (Array.isArray(items) && items.length > 0) {
+        setTodoItems(items);
+      } else if (data.item) {
+        const item = data.item;
+        setTodoItems(prev => {
+          const idx = prev.findIndex(t => t.id === item.id);
+          if (idx !== -1) {
+            const copy = [...prev];
+            copy[idx] = { ...copy[idx], ...item };
+            return copy;
+          }
+          return [...prev, item];
+        });
+      }
+    }
     setMessages(prev => {
       const newMessages = [...prev];
       const lastMsgIndex = newMessages.length - 1;
@@ -254,6 +274,11 @@ export function AgentModePanel({ currentPath, selectedFile, fileContent, onFileC
       </CardHeader>
       
       <CardContent className="flex-1 p-0 flex flex-col overflow-hidden bg-[#1a1a2e]">
+        {todoItems.length > 0 && (
+          <div className="p-3 border-b border-border/50 bg-[#0d0d1a]">
+            <AgentTodoList todoItems={todoItems} compact />
+          </div>
+        )}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           {messages.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-muted-foreground space-y-4">

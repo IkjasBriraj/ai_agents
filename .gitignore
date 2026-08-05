@@ -137,6 +137,8 @@ venv.bak/
 # Generated Documents & Screenshots
 _documents/
 _screenshots/
+_audit_events/
+backend/_audit_events/
 
 # Build files
 dist/

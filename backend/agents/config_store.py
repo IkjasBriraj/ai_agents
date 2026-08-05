@@ -10,15 +10,18 @@ CONFIG_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "age
 
 DEFAULT_CONFIG = {
     "agent_tools": {
-        "code": ["execute_code", "generate_code", "file_operation", "create_project", "analyze_code", "execute_terminal", "schedule_task", "verify_app_browser_console", "browser_open_url", "browser_get_console_errors", "browser_take_screenshot", "browser_vision_audit"],
+        "code": ["generate_image", "execute_code", "generate_code", "file_operation", "create_project", "analyze_code", "execute_terminal", "schedule_task", "verify_app_browser_console", "browser_open_url", "browser_get_console_errors", "browser_take_screenshot", "browser_vision_audit"],
         "research": ["web_search", "summarize_text"],
         "analysis": ["analyze_code", "file_operation", "verify_app_browser_console", "browser_open_url", "browser_get_console_errors", "browser_take_screenshot", "browser_vision_audit"],
-        "business": ["generate_presentation", "generate_excel_sheet", "read_excel_sheet", "csv_sheet_operation", "file_operation"]
+        "business": ["generate_image", "web_search", "fetch_web_page", "generate_presentation", "generate_excel_sheet", "read_excel_sheet", "csv_sheet_operation", "file_operation"]
     },
     "allowed_paths": [],
     "allowed_commands": [],
     "default_main_model": "gemma4:26b",
-    "default_code_model": "gemma4:26b"
+    "default_code_model": "gemma4:26b",
+    "strict_coding_rules": {
+        "no_hardcoded_html": "STRICT PROJECT RULE: Never hardcode any HTML files or index.html templates in Python backend files. Code Agent must generate 100% of application files dynamically using LLM tools."
+    }
 }
 
 _current_config = None
@@ -71,7 +74,11 @@ def save_config(config: dict) -> None:
         for path in config["allowed_paths"]:
             if path and path.strip():
                 # Store absolute normalized paths
-                allowed_paths.append(os.path.abspath(path.strip()))
+                normalized_path = os.path.abspath(path.strip())
+                # Never treat an entire filesystem/drive as a safe zone.
+                if os.path.dirname(normalized_path) == normalized_path:
+                    continue
+                allowed_paths.append(normalized_path)
                 
     # Normalize allowed commands
     allowed_commands = []

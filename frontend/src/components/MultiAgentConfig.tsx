@@ -29,6 +29,7 @@ interface AgentTools {
 interface MultiAgentConfigState {
   agent_tools: AgentTools;
   allowed_paths: string[];
+  allowed_commands: string[];
   default_main_model: string;
   default_code_model: string;
 }
@@ -41,6 +42,7 @@ export const MultiAgentConfig: React.FC = () => {
       analysis: []
     },
     allowed_paths: [],
+    allowed_commands: [],
     default_main_model: 'granite4.1:8b',
     default_code_model: 'granite4.1:8b'
   });
@@ -55,6 +57,7 @@ export const MultiAgentConfig: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [newPath, setNewPath] = useState('');
+  const [newCommand, setNewCommand] = useState('');
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   // Fetch configuration on component mount
@@ -73,6 +76,7 @@ export const MultiAgentConfig: React.FC = () => {
         // Ensure default models exist in the response config
         const fetchedConfig = {
           ...configResponse.config,
+          allowed_commands: configResponse.config.allowed_commands || [],
           default_main_model: configResponse.config.default_main_model || 'granite4.1:8b',
           default_code_model: configResponse.config.default_code_model || 'granite4.1:8b'
         };
@@ -168,6 +172,23 @@ export const MultiAgentConfig: React.FC = () => {
     setStatusMessage(null);
   };
 
+  const handleAddCommand = () => {
+    const commandToAdd = newCommand.trim();
+    if (!commandToAdd) return;
+    if (config.allowed_commands.includes(commandToAdd)) {
+      setStatusMessage({ type: 'error', text: 'That exact command is already allowed.' });
+      return;
+    }
+    setConfig(prev => ({ ...prev, allowed_commands: [...prev.allowed_commands, commandToAdd] }));
+    setNewCommand('');
+    setStatusMessage(null);
+  };
+
+  const handleRemoveCommand = (commandToRemove: string) => {
+    setConfig(prev => ({ ...prev, allowed_commands: prev.allowed_commands.filter(command => command !== commandToRemove) }));
+    setStatusMessage(null);
+  };
+
   // Determine warnings dynamically
   const getWarnings = () => {
     const warnings: string[] = [];
@@ -234,6 +255,17 @@ export const MultiAgentConfig: React.FC = () => {
           </div>
         </div>
       )}
+
+      <Card className="border-amber-500/35 bg-amber-500/5">
+        <CardContent className="flex gap-3 pt-5 text-sm text-foreground">
+          <ShieldAlert className="mt-0.5 h-5 w-5 shrink-0 text-amber-500" />
+          <div className="space-y-1">
+            <h2 className="font-semibold">Safety controls</h2>
+            <p className="text-muted-foreground">Approving a file or command request grants access only for that action. To allow ongoing access, add a specific folder or exact command here. Scheduled tasks stay inside approved folders and cannot auto-approve terminal commands.</p>
+            <p className="text-xs text-muted-foreground">Sensitive configuration changes and approval decisions are recorded in the local security audit log.</p>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Main Settings Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-8">
@@ -523,6 +555,27 @@ export const MultiAgentConfig: React.FC = () => {
                   >
                     <Plus className="w-5 h-5" />
                   </Button>
+                </div>
+              </div>
+
+              <div className="space-y-3 pt-3 border-t border-border/30">
+                <label className="text-[11px] font-mono text-muted-foreground uppercase block font-bold">
+                  Exact Command Allowlist
+                </label>
+                <p className="text-xs leading-relaxed text-muted-foreground">Optional. Commands must match exactly. For example, allowing <code className="bg-muted px-1">npm test</code> does not allow other npm commands.</p>
+                {config.allowed_commands.length > 0 && (
+                  <div className="space-y-1.5 max-h-32 overflow-y-auto pr-1">
+                    {config.allowed_commands.map(command => (
+                      <div key={command} className="flex items-center justify-between gap-2 border border-border bg-card/60 p-2">
+                        <code className="min-w-0 truncate text-xs" title={command}>{command}</code>
+                        <button onClick={() => handleRemoveCommand(command)} className="shrink-0 p-1 text-muted-foreground hover:text-destructive" aria-label={`Remove ${command} from command allowlist`}><Trash2 className="h-4 w-4" /></button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="flex gap-2">
+                  <input type="text" value={newCommand} onChange={(e) => setNewCommand(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleAddCommand()} placeholder="e.g. npm test" className="flex-1 bg-background text-foreground border border-border px-4 py-3 text-sm font-mono focus:outline-none focus:border-ibm-blue" />
+                  <Button onClick={handleAddCommand} variant="outline" className="shrink-0 px-4 py-3 border hover:bg-muted" aria-label="Allow exact command"><Plus className="w-5 h-5" /></Button>
                 </div>
               </div>
             </CardContent>

@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 class AgentModeOrchestrator:
     """Agent Mode: Ollama brain + Claude Code tools for Workspace Explorer"""
     
-    def __init__(self, model_name="gemma4:31b-cloud", ollama_base_url="http://localhost:11434"):
+    def __init__(self, model_name="granite-code:20b", ollama_base_url="http://localhost:11434"):
         self.model_name = model_name
         self.ollama_base_url = ollama_base_url
         self.claude_service = get_claude_code_service()
@@ -72,7 +72,8 @@ class AgentModeOrchestrator:
                             continue
                         try:
                             data = json.loads(line)
-                            token = data.get("message", {}).get("content", "")
+                            msg = data.get("message") if isinstance(data, dict) else {}
+                            token = msg.get("content", "") if isinstance(msg, dict) else str(msg or "")
                             if token:
                                 full_response += token
                                 yield {"type": "text", "content": token}
