@@ -6,6 +6,8 @@ import asyncio
 import json
 import logging
 import traceback
+
+logger = logging.getLogger(__name__)
 from typing import List, Dict, Any, Optional
 from langchain_community.chat_models import ChatOllama
 from .config import DEFAULT_MAIN_MODEL, DEFAULT_CODE_MODEL
@@ -77,6 +79,13 @@ from langchain_classic.agents.output_parsers.react_single_input import ReActSing
 from langchain_core.exceptions import OutputParserException
 from langchain_core.agents import AgentAction, AgentFinish
 from langchain_core.callbacks import BaseCallbackHandler
+
+# Phase 1 upgrades
+try:
+    from .tool_calling_loop import ToolCallingLoop
+    TOOL_CALLING_AVAILABLE = True
+except ImportError:
+    TOOL_CALLING_AVAILABLE = False
 
 
 def create_agent_llm(provider: str = "ollama", model_name: str = DEFAULT_MAIN_MODEL, api_key: str = None, ollama_base_url: str = "http://localhost:11434", thinking_level: str = "medium"):
@@ -753,6 +762,34 @@ Thought: {{agent_scratchpad}}"""
 
         self.react_prompt = prompt
         self.agent = create_react_agent(self.llm, self.tools, prompt, output_parser=RobustReActParser())
+        
+        # Phase 1.4: Context window management
+        try:
+            from .context_manager import get_context_manager
+            self.context_manager = get_context_manager()
+        except Exception:
+            self.context_manager = None
+
+        # Phase 1.1: Initialize native tool-calling loop (preferred over ReAct)
+        self.tool_calling_loop = None
+        self.legacy_react_mode = True  # Default to legacy; switched per-invocation
+        if TOOL_CALLING_AVAILABLE:
+            try:
+                self.tool_calling_loop = ToolCallingLoop(
+                    llm=self.llm,
+                    tools=self.tools,
+                    system_prompt=system_prompt,
+                    max_steps=15,
+                    max_execution_time=300
+                )
+                if self.tool_calling_loop.supports_native_tools():
+                    self.legacy_react_mode = False
+                    logger.info(f"Agent '{self.name}' using native tool calling")
+                else:
+                    logger.info(f"Agent '{self.name}' using legacy ReAct (model doesn't support tool calling)")
+            except Exception as tc_err:
+                logger.warning(f"Tool calling loop init failed, using ReAct fallback: {tc_err}")
+
         self.agent_executor = AgentExecutor(
             agent=self.agent,
             tools=self.tools,
@@ -837,6 +874,9 @@ Thought: {{agent_scratchpad}}"""
 
             formatted_history = ""
             if chat_history:
+                # Phase 1.4: Compact history if context manager available
+                if self.context_manager and len(chat_history) > 6:
+                    chat_history = self.context_manager.compact_history(chat_history)
                 formatted = []
                 for msg in chat_history:
                     role = "User" if msg.type == "human" else "Assistant"
@@ -845,6 +885,20 @@ Thought: {{agent_scratchpad}}"""
 
             from .config import AGENT_WORKSPACE_DIR
             import glob
+            
+            # Phase 1.3: Create git checkpoint before agent execution
+            checkpoint_hash = None
+            if self.agent_type == "code":
+                try:
+                    from .git_manager import get_git_manager
+                    gm = get_git_manager()
+                    gm.init_if_needed()
+                    checkpoint_hash = gm.create_checkpoint(f"pre-{self.agent_type}-edit")
+                    if checkpoint_hash:
+                        logger.info(f"Git checkpoint created: {checkpoint_hash}")
+                except Exception as git_err:
+                    logger.warning(f"Git checkpoint failed (non-critical): {git_err}")
+
             files_before = {
                 f: os.path.getmtime(f) for f in glob.glob(os.path.join(AGENT_WORKSPACE_DIR, "**", "*"), recursive=True)
                 if os.path.isfile(f) and not os.path.basename(f).startswith("_")

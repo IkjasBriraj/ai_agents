@@ -757,6 +757,82 @@ def patch_file_content(path: str, content: Any) -> str:
         return f"Error patching file: {str(e)}"
 
 
+def edit_file_search_replace(path: str, search_block: str, replace_block: str, similarity_threshold: float = 0.6) -> str:
+    """Edit a file using search/replace blocks with fuzzy matching support.
+    
+    More reliable than exact-string patching. Uses Aider-style search/replace
+    with automatic fuzzy matching when exact match fails.
+    """
+    try:
+        from .diff_engine import apply_search_replace, generate_unified_diff
+        
+        if not path:
+            return "Error: File path cannot be empty."
+        
+        # Resolve path
+        path = resolve_target_file_path(path)
+        
+        # Security check
+        if not check_and_request_permission(path):
+            return f"Error: Access denied. Path must be whitelisted: {path}"
+        
+        if not is_allowed_extension(path):
+            return f"Error: File extension not allowed. File: {path}"
+        
+        if not os.path.exists(path):
+            return f"Error: File not found: {path}. Use file_operation(write) to create new files."
+        
+        # Read original for diff
+        with open(path, 'r', encoding='utf-8') as f:
+            original_content = f.read()
+        
+        result = apply_search_replace(path, search_block, replace_block, similarity_threshold)
+        
+        if result.success:
+            # Read modified content and generate diff for audit trail
+            with open(path, 'r', encoding='utf-8') as f:
+                modified_content = f.read()
+            diff = generate_unified_diff(original_content, modified_content, path)
+            rel_path = os.path.relpath(path, AGENT_WORKSPACE_DIR)
+            return f"[SUCCESS] Edited: {rel_path}\n  Confidence: {result.confidence:.0%}\n  Method: {result.message}\n\nDiff:\n{diff}"
+        else:
+            return f"[FAILED] {result.message}\n  File: {path}\n  Tip: Try reading the file first to see exact content, then use precise search content."
+    except Exception as e:
+        return f"Error editing file: {str(e)}"
+
+
+def git_inspect_workspace(operation: str = "status", commit_hash: str = "") -> str:
+    """Inspect git state of the workspace for self-review of changes."""
+    try:
+        from .git_manager import get_git_manager
+        gm = get_git_manager()
+        
+        if not gm.is_repo():
+            return "Workspace is not a git repository. Changes are not tracked."
+        
+        if operation == "status":
+            return gm.get_status()
+        elif operation == "diff":
+            return gm.get_diff(from_hash=commit_hash if commit_hash else None)
+        elif operation == "log":
+            checkpoints = gm.list_recent_checkpoints(count=10)
+            if not checkpoints:
+                return "No agent checkpoints found."
+            lines = ["Recent agent checkpoints:"]
+            for cp in checkpoints:
+                lines.append(f"  {cp['hash']} - {cp['message']}")
+            return "\n".join(lines)
+        elif operation == "rollback":
+            if not commit_hash:
+                return "Error: commit_hash is required for rollback operation."
+            success = gm.rollback_to(commit_hash)
+            return f"Rollback to {commit_hash}: {'SUCCESS' if success else 'FAILED'}"
+        else:
+            return f"Unknown operation: {operation}. Use 'status', 'diff', 'log', or 'rollback'."
+    except Exception as e:
+        return f"Error inspecting git: {str(e)}"
+
+
 def list_directory(path: str = "") -> str:
     """List directory contents in workspace"""
     try:
@@ -2565,6 +2641,24 @@ def get_code_agent_tools() -> List[StructuredTool]:
                 int(safe_parse_input(x).get("delay_minutes", 1))
             ),
             description="Schedule a future or recurring task. Input should be a dict with 'task_name', 'prompt' (the instruction to execute later), 'interval_minutes' (0 for one-time, >0 for recurring), and 'delay_minutes' (minutes from now until first run). Use this when the user wants something checked periodically or at a future time."
+        ),
+        StructuredTool.from_function(
+            name="edit_file",
+            func=lambda x: edit_file_search_replace(
+                safe_parse_input(x).get("path", ""),
+                safe_parse_input(x).get("search", safe_parse_input(x).get("search_block", "")),
+                safe_parse_input(x).get("replace", safe_parse_input(x).get("replace_block", "")),
+                float(safe_parse_input(x).get("similarity_threshold", 0.6))
+            ),
+            description="Edit an existing file using search/replace blocks with fuzzy matching. More reliable than patch. Input: dict with 'path' (relative to workspace), 'search' (exact or approximate content to find), 'replace' (replacement content). Optional 'similarity_threshold' (0.0-1.0, default 0.6). The tool finds the best matching section and replaces it, even with minor whitespace/indentation differences."
+        ),
+        StructuredTool.from_function(
+            name="git_inspect",
+            func=lambda x: git_inspect_workspace(
+                safe_parse_input(x).get("operation", "status"),
+                safe_parse_input(x).get("commit_hash", "")
+            ),
+            description="Inspect git state of the workspace to review your own changes. Operations: 'status' (show modified files), 'diff' (show code changes, optional 'commit_hash' for diff from specific commit), 'log' (list recent agent checkpoints), 'rollback' (restore to a checkpoint, requires 'commit_hash'). Input: dict with 'operation' and optional 'commit_hash'."
         ),
     ] + _get_browser_tools()
 
