@@ -833,6 +833,63 @@ def git_inspect_workspace(operation: str = "status", commit_hash: str = "") -> s
         return f"Error inspecting git: {str(e)}"
 
 
+def search_code_symbols(query: str, search_type: str = "definition") -> str:
+    """Search for code symbols (classes, functions, methods, exports) in the workspace."""
+    try:
+        from .code_map import get_code_mapper
+        cm = get_code_mapper()
+        if search_type == "reference":
+            results = cm.find_references(query)
+        else:
+            results = cm.find_definition(query)
+            
+        if not results:
+            return f"No symbol matches found for '{query}' ({search_type})."
+            
+        lines = [f"Symbol search results for '{query}' ({search_type}):"]
+        for loc in results:
+            rel = os.path.relpath(loc.file_path, AGENT_WORKSPACE_DIR) if os.path.isabs(loc.file_path) else loc.file_path
+            lines.append(f"  {rel}:L{loc.line_number} [{loc.symbol_type}] {loc.name} -> {loc.signature}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error searching code symbols: {str(e)}"
+
+
+def get_code_file_outline(path: str) -> str:
+    """Get structural outline of symbols for a specific code file."""
+    try:
+        from .code_map import get_code_mapper
+        cm = get_code_mapper()
+        path = resolve_target_file_path(path)
+        if not os.path.exists(path):
+            return f"Error: File not found: {path}"
+        return cm.get_file_outline(path)
+    except Exception as e:
+        return f"Error getting file outline: {str(e)}"
+
+
+def query_codebase_rag(query: str, k: int = 5) -> str:
+    """Query workspace codebase using Hybrid RAG (Dense vector + Sparse BM25)."""
+    try:
+        from .vector_store import HybridCodeStore, OllamaEmbeddings
+        embedder = OllamaEmbeddings()
+        store = HybridCodeStore(embedder=embedder)
+        results = store.hybrid_query(query, k=k)
+        if not results:
+            return f"No codebase RAG results found for query: '{query}'"
+            
+        parts = [f"Codebase Hybrid RAG results for '{query}':\n"]
+        for score, item in results:
+            meta = item.get("metadata", {})
+            file_name = meta.get("file_name", "unknown")
+            text = item.get("text", "")[:300]
+            parts.append(f"### Score: {score:.2f} | File: {file_name}\n```\n{text}...\n```\n")
+        return "\n".join(parts)
+    except Exception as e:
+        return f"Error querying codebase RAG: {str(e)}"
+
+
+
 def list_directory(path: str = "") -> str:
     """List directory contents in workspace"""
     try:
@@ -2659,6 +2716,29 @@ def get_code_agent_tools() -> List[StructuredTool]:
                 safe_parse_input(x).get("commit_hash", "")
             ),
             description="Inspect git state of the workspace to review your own changes. Operations: 'status' (show modified files), 'diff' (show code changes, optional 'commit_hash' for diff from specific commit), 'log' (list recent agent checkpoints), 'rollback' (restore to a checkpoint, requires 'commit_hash'). Input: dict with 'operation' and optional 'commit_hash'."
+        ),
+        StructuredTool.from_function(
+            name="search_symbols",
+            func=lambda x: search_code_symbols(
+                safe_parse_input(x).get("query", x if isinstance(x, str) else ""),
+                safe_parse_input(x).get("search_type", "definition")
+            ),
+            description="Search for class, function, method, or import symbol definitions/references across the workspace. Input: dict with 'query' (symbol name) and optional 'search_type' ('definition' or 'reference')."
+        ),
+        StructuredTool.from_function(
+            name="get_file_outline",
+            func=lambda x: get_code_file_outline(
+                safe_parse_input(x).get("path", x if isinstance(x, str) else "")
+            ),
+            description="Get structural outline of symbols (classes, functions, signatures) for a specific code file. Input: dict with 'path'."
+        ),
+        StructuredTool.from_function(
+            name="query_codebase",
+            func=lambda x: query_codebase_rag(
+                safe_parse_input(x).get("query", x if isinstance(x, str) else ""),
+                int(safe_parse_input(x).get("k", 5))
+            ),
+            description="Query workspace codebase using Hybrid RAG (dense vector similarity + BM25 keyword search). Input: dict with 'query' and optional 'k' (top results count)."
         ),
     ] + _get_browser_tools()
 
