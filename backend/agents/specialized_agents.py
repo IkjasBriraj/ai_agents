@@ -10,7 +10,7 @@ import traceback
 logger = logging.getLogger(__name__)
 from typing import List, Dict, Any, Optional
 from langchain_community.chat_models import ChatOllama
-from .config import DEFAULT_MAIN_MODEL, DEFAULT_CODE_MODEL
+from .config import DEFAULT_MAIN_MODEL, DEFAULT_CODE_MODEL, AGENT_WORKSPACE_DIR
 
 class SafeChatOllama(ChatOllama):
     """Subclass of ChatOllama that merges and safely handles stop parameters to avoid conflicts."""
@@ -19,19 +19,18 @@ class SafeChatOllama(ChatOllama):
         ollama_base_url = kwargs.get("base_url", "http://localhost:11434")
 
         if model_name:
-            if "-cloud" in model_name or ":cloud" in model_name:
-                model_name = "granite-code:20b" if "code" in model_name.lower() else "gemma4:26b"
-                kwargs["model"] = model_name
             import requests
             try:
                 res = requests.get(f"{ollama_base_url}/api/tags", timeout=2.0)
                 if res.status_code == 200:
                     local_names = [m["name"] for m in res.json().get("models", [])]
                     if model_name not in local_names and f"{model_name}:latest" not in local_names:
-                        if "granite-code:20b" in local_names:
-                            kwargs["model"] = "granite-code:20b"
+                        if "gemma4:31b-cloud" in local_names:
+                            kwargs["model"] = "gemma4:31b-cloud"
                         elif "gemma4:26b" in local_names:
                             kwargs["model"] = "gemma4:26b"
+                        elif "granite-code:20b" in local_names:
+                            kwargs["model"] = "granite-code:20b"
                         elif local_names:
                             kwargs["model"] = local_names[0]
             except Exception:
@@ -51,10 +50,23 @@ class SafeChatOllama(ChatOllama):
             iterator = super()._create_stream(api_url, payload, stop=combined_stop, **kwargs)
 
             def generator_wrapper(it):
+                accumulated = ""
+                stop_lowers = [s.lower() for s in combined_stop if s]
+
                 for chunk in it:
-                    yield chunk
                     try:
                         data = json.loads(chunk)
+                        msg_dict = data.get("message")
+                        content = ""
+                        is_chat = False
+                        if isinstance(msg_dict, dict) and "content" in msg_dict:
+                            content = msg_dict["content"]
+                            is_chat = True
+                        elif "response" in data:
+                            content = data.get("response", "")
+
+                        accumulated += content
+
                         if data.get("done") or "prompt_eval_count" in data:
                             prompt_tokens = data.get("prompt_eval_count", 0)
                             completion_tokens = data.get("eval_count", 0)
@@ -65,8 +77,35 @@ class SafeChatOllama(ChatOllama):
                                     usage["prompt_tokens"] += prompt_tokens
                                     usage["completion_tokens"] += completion_tokens
                                     usage["total_tokens"] += (prompt_tokens + completion_tokens)
+
+                        # Enforce stop sequences if Ollama model didn't stop automatically
+                        if stop_lowers:
+                            hit_stop = None
+                            hit_idx = -1
+                            acc_lower = accumulated.lower()
+                            for s in stop_lowers:
+                                idx = acc_lower.find(s)
+                                if idx != -1:
+                                    if hit_idx == -1 or idx < hit_idx:
+                                        hit_idx = idx
+                                        hit_stop = s
+
+                            if hit_stop is not None and hit_idx != -1:
+                                allowed_total_len = hit_idx
+                                prev_len = len(accumulated) - len(content)
+                                keep_len = max(0, allowed_total_len - prev_len)
+                                truncated_content = content[:keep_len]
+                                if is_chat:
+                                    data["message"]["content"] = truncated_content
+                                elif "response" in data:
+                                    data["response"] = truncated_content
+                                data["done"] = True
+                                yield json.dumps(data)
+                                return
+
+                        yield chunk
                     except Exception:
-                        pass
+                        yield chunk
             return generator_wrapper(iterator)
         finally:
             object.__setattr__(self, "stop", old_stop)
@@ -196,8 +235,6 @@ def create_agent_llm(provider: str = "ollama", model_name: str = DEFAULT_MAIN_MO
 
     else:
         target_model = model_name or DEFAULT_MAIN_MODEL
-        if target_model and (target_model.endswith("-cloud") or ":cloud" in target_model):
-            target_model = "granite-code:20b" if "code" in target_model.lower() else "gemma4:26b"
 
         kwargs = {
             "model": target_model,
@@ -276,20 +313,30 @@ def extract_file_path_from_code_block(path_hint: str = "", code_content: str = "
         else:
             target_path = "app.html" if "<html" in code_content.lower() else "app.py"
 
-    # 5. Folder Directive Auto-Prefixing from task_text or full_text
-    context_for_folder = task_text or full_text
+    # 5. Folder Directive Auto-Prefixing from task_text (preferred) or full_text
+    context_for_folder = task_text if (task_text and task_text.strip()) else full_text
     if target_path and context_for_folder and not os.path.isabs(target_path):
-        folder_match = re.search(r'(?:in|into|inside|under)\s+(?:the\s+)?(?:folder|directory|dir)\s+[\'"`*]*([a-zA-Z0-9_\-]+)[\'"`*]*', context_for_folder, re.IGNORECASE)
-        if not folder_match:
-            folder_match = re.search(r'(?:folder|directory)\s+[:=]?\s*[\'"`*]*([a-zA-Z0-9_\-]+)[\'"`*]*', context_for_folder, re.IGNORECASE)
-        
-        if folder_match:
-            folder_name = folder_match.group(1).strip()
-            # Avoid using reserved or system keywords as folder names
-            if folder_name and folder_name.lower() not in ["the", "a", "an", "this", "my", "your", "new", "workspace", "code", "website"]:
-                norm_target = target_path.replace("\\", "/")
-                if not norm_target.startswith(folder_name + "/"):
-                    target_path = f"{folder_name}/{target_path}"
+        STOP_WORDS = {
+            'the', 'a', 'an', 'this', 'that', 'these', 'those', 'my', 'your', 'his', 'her', 'its', 'our', 'their',
+            'new', 'workspace', 'code', 'website', 'with', 'for', 'and', 'or', 'in', 'into', 'inside', 'under',
+            'on', 'at', 'to', 'from', 'by', 'of', 'please', 'make', 'create', 'build', 'have', 'has', 'had',
+            'is', 'are', 'was', 'were', 'be', 'been', 'being', 'it', 'so', 'as', 'if', 'general', 'main', 'root',
+            'here', 'there', 'where', 'which', 'who', 'whom', 'whose', 'why', 'how', 'all', 'any', 'both', 'each',
+            'few', 'more', 'most', 'other', 'some', 'such', 'no', 'nor', 'not', 'only', 'own', 'same', 'than',
+            'too', 'very', 'can', 'will', 'just', 'don', 'should', 'now', 'folder', 'directory', 'dir', 'files', 'file'
+        }
+        is_root_website = re.search(r'(?:in|into|inside|under)\s+(?:my\s+|the\s+)?(?:website|workspace|code)\s*(?:folder|directory|dir)?', context_for_folder, re.IGNORECASE)
+        if not is_root_website:
+            folder_match = re.search(r'(?:in|into|inside|under)\s+(?:the\s+)?(?:folder|directory|dir)\s+[\'"`*]*([a-zA-Z0-9_\-]+)[\'"`*]*', context_for_folder, re.IGNORECASE)
+            if not folder_match:
+                folder_match = re.search(r'(?:folder|directory)\s*[:=]\s*[\'"`*]*([a-zA-Z0-9_\-]+)[\'"`*]*', context_for_folder, re.IGNORECASE)
+            
+            if folder_match:
+                folder_name = folder_match.group(1).strip()
+                if folder_name and folder_name.lower() not in STOP_WORDS:
+                    norm_target = target_path.replace("\\", "/")
+                    if not norm_target.startswith(folder_name + "/"):
+                        target_path = f"{folder_name}/{target_path}"
 
     if target_path:
         target_path = re.sub(r'^[^\w\.\/\\]+', '', target_path).strip("`*# :-\t\n\r")
@@ -385,6 +432,16 @@ class RobustReActParser(ReActSingleInputOutputParser):
 
             action_input = input_match.group(1).strip()
 
+            # If the model emitted both update_todo_list and a file creation action, prioritize file creation!
+            if action == "update_todo_list":
+                file_action_m = re.search(r"\[?action\]?\s*(?:\d+)??\s*[:\s]\s*(create_project|file_operation)", text_for_parsing, re.IGNORECASE)
+                if file_action_m:
+                    after_act = text_for_parsing[file_action_m.end():]
+                    file_input_m = re.search(r"\[?action\s*(?:\d+)??\s*input\]?\s*[:\s]\s*(.+)", after_act, re.IGNORECASE | re.DOTALL)
+                    if file_input_m:
+                        action = file_action_m.group(1).strip().lower()
+                        action_input = file_input_m.group(1).strip()
+
             obs_marker = "observation:"
             final_marker = "final answer:"
             thought_marker = "thought:"
@@ -419,10 +476,23 @@ class RobustReActParser(ReActSingleInputOutputParser):
                 action_input = action_input[1:-1].strip()
 
             action_key = f"{action}:{action_input[:100]}"
+            last_key = getattr(self, '_last_action_key', None)
+            if last_key != action_key:
+                self._consecutive_counts = {}
+            self._last_action_key = action_key
             self._consecutive_counts[action_key] = self._consecutive_counts.get(action_key, 0) + 1
+            if not hasattr(self, '_action_history'):
+                self._action_history = []
+            self._action_history.append(action_key)
+
+            # Cycle detection: 2-step alternating cycles (A -> B -> A -> B)
+            if len(self._action_history) >= 4:
+                h = self._action_history
+                if h[-4] == h[-2] and h[-3] == h[-1]:
+                    return AgentFinish({"output": f"### 🚀 Completed (Cycle Break)\n\nDetected repeating pattern between `{h[-2].split(':')[0]}` and `{h[-1].split(':')[0]}`. Concluding execution with workspace state."}, text)
 
             is_read_only = any(ro in action_input_lower for ro in ['"read"', '"list"', "read_file", "list_dir", "get_console"]) or action in ["verify_app_browser_console", "browser_get_console_errors"]
-            max_allowed = 8 if is_read_only else 4
+            max_allowed = 12 if action == "update_todo_list" else (4 if is_read_only else 3)
 
             if self._consecutive_counts[action_key] >= max_allowed:
                 return AgentFinish({"output": f"### 🚀 Action Completed\n\nVerified execution of action `{action}` in workspace."}, text)
@@ -537,15 +607,16 @@ class RobustReActParser(ReActSingleInputOutputParser):
                     "Invalid Format: You MUST execute a tool using 'Action: file_operation' or 'Action: create_project' to write your generated code to the workspace. Do not just output code blocks or text descriptions without executing a file writing tool call! Output your tool call in the exact format:\nAction: file_operation\nAction Input: {\"operation\": \"write\", \"path\": \"filename.ext\", \"content\": \"...\"}"
                 )
 
-            # If tools have ALREADY been executed in this session and a file write occurred, returning AgentFinish with output is acceptable.
+            # If tools have ALREADY been executed in this session and a file write occurred (or actions were taken), returning AgentFinish with output is acceptable.
+            if len(self._previous_actions) > 0 or len(self._consecutive_counts) > 0 or has_file_write:
                 clean_output = re.sub(r'<\|[^|]*\|?>?', '', text)
                 clean_output = re.sub(r'</?tool_response>', '', clean_output).strip()
                 if clean_output.lower().startswith("thought:"):
                     clean_output = clean_output[8:].strip()
-                return AgentFinish({"output": clean_output}, text)
+                return AgentFinish({"output": clean_output or "Action completed."}, text)
             else:
                 raise OutputParserException(
-                    "Invalid Format: You MUST execute a tool using 'Action: file_operation' or 'Action: create_project' to write your code to the workspace. Do not stop at thoughts or descriptions. Output your tool call in the format: Action: <tool_name>\nAction Input: <tool_input>"
+                    "Invalid Format: You MUST execute a tool using 'Action: <tool_name>' or provide 'Final Answer: <your response>'. Output your tool call in the format: Action: <tool_name>\nAction Input: <tool_input>"
                 )
 
 
@@ -603,6 +674,70 @@ class ThreadSafeAgentCallbackHandler(BaseCallbackHandler):
                         self.final_answer_started = True
                         break
 
+    def _advance_todo_list(self, tool_name: str, tool_input: Any = None, is_end: bool = False):
+        try:
+            from .session_context import current_agent_context
+            ctx = current_agent_context.get()
+            if not ctx:
+                return
+            todo_list = ctx.get("todo_list")
+            if not todo_list or not isinstance(todo_list, list):
+                return
+
+            tool_lower = str(tool_name or "").lower()
+            input_str = str(tool_input or "").lower()
+
+            matched_idx = -1
+            for idx, item in enumerate(todo_list):
+                t_title = str(item.get("title", "")).lower()
+                # Check for file or action keyword matches
+                if (".html" in input_str or "html" in input_str or "structure" in input_str or "layout" in input_str) and \
+                   ("html" in t_title or "structure" in t_title or "layout" in t_title or "page" in t_title or "template" in t_title):
+                    matched_idx = idx
+                    break
+                elif (".css" in input_str or "css" in input_str or "style" in input_str or "theme" in input_str or "glass" in input_str) and \
+                     ("css" in t_title or "style" in t_title or "theme" in t_title or "design" in t_title or "glass" in t_title):
+                    matched_idx = idx
+                    break
+                elif (".js" in input_str or ".ts" in input_str or "javascript" in input_str or "script" in input_str or "interact" in input_str) and \
+                     ("js" in t_title or "logic" in t_title or "script" in t_title or "interact" in t_title or "component" in t_title):
+                    matched_idx = idx
+                    break
+                elif ("verify" in tool_lower or "repair" in tool_lower or "audit" in tool_lower or "check" in tool_lower or "test" in tool_lower) and \
+                     ("verify" in t_title or "repair" in t_title or "audit" in t_title or "check" in t_title or "test" in t_title):
+                    matched_idx = idx
+                    break
+                elif ("search" in tool_lower or "research" in tool_lower) and ("research" in t_title or "search" in t_title or "find" in t_title):
+                    matched_idx = idx
+                    break
+
+            if matched_idx == -1:
+                # Fallback: advance the first item that is in_progress or pending
+                for idx, item in enumerate(todo_list):
+                    if item.get("status") in ("in_progress", "pending"):
+                        matched_idx = idx
+                        break
+
+            if matched_idx != -1:
+                for i in range(matched_idx):
+                    todo_list[i]["status"] = "completed"
+
+                if is_end:
+                    todo_list[matched_idx]["status"] = "completed"
+                    if matched_idx + 1 < len(todo_list):
+                        todo_list[matched_idx + 1]["status"] = "in_progress"
+                else:
+                    todo_list[matched_idx]["status"] = "in_progress"
+
+                ctx["todo_list"] = todo_list
+                self._put_event({
+                    "type": "todo_list_update",
+                    "items": [dict(it) for it in todo_list],
+                    "done": False
+                })
+        except Exception as e:
+            logger.warning(f"Error advancing todo list: {e}")
+
     def on_agent_action(self, action: AgentAction, **kwargs) -> None:
         self._check_cancellation()
         self.executed_actions.append(action.tool)
@@ -611,6 +746,8 @@ class ThreadSafeAgentCallbackHandler(BaseCallbackHandler):
             "tool": action.tool,
             "tool_input": action.tool_input
         })
+        if action.tool != "update_todo_list":
+            self._advance_todo_list(action.tool, action.tool_input, is_end=False)
 
     def on_tool_end(self, output: str, **kwargs) -> None:
         self._check_cancellation()
@@ -618,9 +755,27 @@ class ThreadSafeAgentCallbackHandler(BaseCallbackHandler):
             "type": "tool_end",
             "output": output
         })
+        last_tool = self.executed_actions[-1] if self.executed_actions else ""
+        if last_tool and last_tool != "update_todo_list":
+            self._advance_todo_list(last_tool, output, is_end=True)
 
     def on_agent_finish(self, finish: AgentFinish, **kwargs) -> None:
         self._check_cancellation()
+        # Mark all todo items as 100% completed on finish
+        try:
+            from .session_context import current_agent_context
+            ctx = current_agent_context.get()
+            if ctx and "todo_list" in ctx and ctx["todo_list"]:
+                for item in ctx["todo_list"]:
+                    item["status"] = "completed"
+                self._put_event({
+                    "type": "todo_list_update",
+                    "items": [dict(it) for it in ctx["todo_list"]],
+                    "done": True
+                })
+        except Exception as e:
+            pass
+
         output_text = ""
         if hasattr(finish, "return_values") and isinstance(finish.return_values, dict):
             output_text = str(finish.return_values.get("output", "")).strip()
@@ -934,13 +1089,19 @@ Thought: {{agent_scratchpad}}"""
                 output_text = str(result).strip()
 
             # Automatic Fallback File Writer: If the model output code blocks with file path hints, write them to disk!
-            if output_text and ("```" in output_text or "index.html" in output_text or ".html" in output_text or ".py" in output_text or ".js" in output_text or ".css" in output_text or ".json" in output_text or ".md" in output_text):
+            text_to_scan = output_text
+            if isinstance(result, dict) and "intermediate_steps" in result:
+                for step in result["intermediate_steps"]:
+                    if isinstance(step, tuple) and len(step) > 0:
+                        text_to_scan += "\n" + str(step[0])
+
+            if text_to_scan and ("```" in text_to_scan or "index.html" in text_to_scan or ".html" in text_to_scan or ".py" in text_to_scan or ".js" in text_to_scan or ".css" in text_to_scan or ".json" in text_to_scan or ".md" in text_to_scan):
                 import re
                 
                 # Pattern: Code blocks preceded by file path headers, e.g. index.html or ```html ... ```
-                file_block_matches = re.findall(r'(?:(?:file|filename|path|created|wrote|output|###|\*\*|`)\s*[:`*]*\s*([a-zA-Z0-9_\-\.\/\\]+\.[a-zA-Z0-9]+)[`*:\s]*\n+)?```(?:[a-zA-Z0-9_\-\:\=]+\n)?([\s\S]+?)```', output_text, re.IGNORECASE)
+                file_block_matches = re.findall(r'(?:(?:file|filename|path|created|wrote|output|###|\*\*|`)\s*[:`*]*\s*([a-zA-Z0-9_\-\.\/\\]+\.[a-zA-Z0-9]+)[`*:\s]*\n+)?```(?:[a-zA-Z0-9_\-\:\=]+\n)?([\s\S]+?)```', text_to_scan, re.IGNORECASE)
                 if not file_block_matches:
-                    standard_b = re.findall(r'```(?:([a-zA-Z0-9_\-\:\=]+)\n)?([\s\S]+?)```', output_text)
+                    standard_b = re.findall(r'```(?:([a-zA-Z0-9_\-\:\=]+)\n)?([\s\S]+?)```', text_to_scan)
                     if standard_b:
                         file_block_matches = [("", content) for _, content in standard_b]
 
@@ -949,7 +1110,7 @@ Thought: {{agent_scratchpad}}"""
                     if not code_content or len(code_content) < 5 or (code_content.startswith("{") and "Action:" in code_content):
                         continue
                     
-                    target_path = extract_file_path_from_code_block(path_hint, code_content, output_text, task)
+                    target_path = extract_file_path_from_code_block(path_hint, code_content, text_to_scan, task)
                     
                     if target_path:
                         abs_p = target_path if os.path.isabs(target_path) else os.path.join(AGENT_WORKSPACE_DIR, target_path)
@@ -961,6 +1122,63 @@ Thought: {{agent_scratchpad}}"""
                             no_files_modified = False
                         except Exception as fw_err:
                             print(f"[FALLBACK FILE WRITER] Error writing file {abs_p}: {fw_err}")
+
+            # Direct Code Generation Fallback: If Code Agent ran but no files were created on disk, generate and save them directly!
+            if self.agent_type == "code" and no_files_modified:
+                print(f"[DIRECT FILE WRITER] Code Agent modified 0 files for task: '{task[:80]}'. Running direct generation pass...")
+                try:
+                    from .tools import write_file_content
+                    target_filename = "index.html"
+                    t_lower = task.lower()
+                    if ".html" in t_lower or "landing page" in t_lower or "website" in t_lower or "web page" in t_lower or "portfolio" in t_lower:
+                        target_filename = "index.html"
+                    elif ".py" in t_lower or "python" in t_lower or "script" in t_lower:
+                        target_filename = "main.py"
+                    elif ".js" in t_lower or "javascript" in t_lower or "node" in t_lower:
+                        target_filename = "script.js"
+                    elif ".css" in t_lower:
+                        target_filename = "style.css"
+                    elif ".json" in t_lower:
+                        target_filename = "data.json"
+
+                    fn_match = re.search(r'(?:called|named|file|path)\s+[\'"`*]*([a-zA-Z0-9_\-\.\/\\]+\.[a-zA-Z0-9]{1,5})[\'"`*]*', task, re.IGNORECASE)
+                    if fn_match:
+                        target_filename = fn_match.group(1).strip("`*# :-\t\n\r")
+
+                    gen_prompt = f"""You are an Expert Senior Developer.
+Generate the complete, production-ready, beautiful code for:
+User Request: {task}
+
+Requirements:
+- 100% complete, executable code without any placeholders or ellipses.
+- If HTML/website, use modern dark glassmorphism styling (`bg-slate-950 text-slate-100`), Google Fonts, Tailwind CSS via CDN, Lucide icons, responsive layout, and full interactive features.
+- Output the code directly inside markdown code blocks with the file path header `### {target_filename}`:
+### {target_filename}
+```html
+<your code here>
+```"""
+                    gen_res = self.llm.invoke([HumanMessage(content=gen_prompt)])
+                    gen_text = gen_res.content if hasattr(gen_res, "content") else str(gen_res)
+
+                    direct_matches = re.findall(r'(?:(?:file|filename|path|created|wrote|output|###|\*\*|`)\s*[:`*]*\s*([a-zA-Z0-9_\-\.\/\\]+\.[a-zA-Z0-9]+)[`*:\s]*\n+)?```(?:[a-zA-Z0-9_\-\:\=]+\n)?([\s\S]+?)```', gen_text, re.IGNORECASE)
+                    if not direct_matches:
+                        std_m = re.findall(r'```(?:([a-zA-Z0-9_\-\:\=]+)\n)?([\s\S]+?)```', gen_text)
+                        if std_m:
+                            direct_matches = [(target_filename, c) for _, c in std_m]
+
+                    for p_h, c_c in direct_matches:
+                        c_c = c_c.strip()
+                        if len(c_c) >= 5:
+                            t_p = extract_file_path_from_code_block(p_h, c_c, gen_text, task) or target_filename
+                            w_res = write_file_content(t_p, c_c)
+                            print(f"[DIRECT FILE WRITER] Wrote {t_p} to workspace: {w_res}")
+                            no_files_modified = False
+
+                    if no_files_modified and ("<html" in gen_text.lower() or "def " in gen_text or "import " in gen_text):
+                        write_file_content(target_filename, gen_text.strip())
+                        no_files_modified = False
+                except Exception as gen_err:
+                    print(f"[DIRECT FILE WRITER] Error in direct fallback generation: {gen_err}")
 
             return output_text
 
@@ -1042,8 +1260,10 @@ CRITICAL RULES:
      * 📁 **Files Created & Project Architecture**: Complete list of relative file paths generated or modified.
      * 🎨 **Visual Assets & Design System**: Highlights of custom AI images generated (`generate_image`), vector icons, theme, and styling.
      * ⚡ **How to Run & Test**: Clear terminal instructions (e.g. `npm run dev` or opening `index.html`).
-     * 🧪 **Verification & Build Status**: Confirmation of compiler pass (`batch_verify_and_repair_files` / `verify_project_build`) with 0 errors.
-   - EVERY APPLICATION MUST BE CREATED INSIDE ITS OWN DEDICATED FOLDER within the workspace directory (`project_name/`). Paths are RELATIVE to the workspace — do NOT prefix with the workspace folder name.
+    - WORKSPACE DIRECTORY & ROOT FILE PLACEMENT RULES:
+      * When creating a website, portfolio, landing page, or HTML app in the workspace (or when the user asks for code "in my website folder"), THE PRIMARY ENTRY POINT (`index.html`, `style.css`, `script.js` or the requested file name like `hello.html`) MUST BE PLACED DIRECTLY IN THE WORKSPACE ROOT (`{AGENT_WORKSPACE_DIR}`).
+      * Do NOT hide files inside random nested subfolders unless the user explicitly requested a specific subfolder (e.g. "in folder calculator").
+      * If a multi-file project with a subfolder is created, you must ALSO ensure a root `index.html` is created in `{AGENT_WORKSPACE_DIR}` so the website folder immediately has the working web application.
    - For multi-file applications (especially Next.js apps), PREFER USING THE `create_project` TOOL to generate all initial project files at once in a single fast call:
      Action: create_project
      Action Input: {{"my_app/package.json": "...", "my_app/next.config.js": "...", "my_app/app/layout.tsx": "...", "my_app/app/page.tsx": "...", "my_app/app/globals.css": "...", "my_app/README.md": "..."}}
@@ -1077,8 +1297,7 @@ PRIMARY FRAMEWORK SELECTION & CODE GENERATION DIRECTIVES:
    - IF THE USER ASKS TO "make an app", "build a website", "create a project", or write code WITHOUT explicitly specifying a framework, DO NOT STOP TO ASK QUESTIONS OR REQUEST CLARIFICATION!
    - IMMEDIATELY WRITE THE CODE AND GENERATE ALL REQUIRED APPLICATION FILES USING YOUR TOOLS (`create_project` or `file_operation(write)`).
    - FOR REACT/NEXT.JS OR COMPLEX APPLICATION REQUESTS: Generate production-grade Next.js 14+ App Router projects with complete TypeScript, Tailwind CSS, Lucide icons, and `lib/utils.ts`.
-   - FOR SIMPLE LIGHTWEIGHT LANDING PAGES OR PROTOTYPES: Create clean, responsive web applications starting with `index.html` (HTML5, Tailwind CDN, Lucide icons, Google Fonts, and custom JS/CSS).
-   - Dedicated Project Folder: Create a clean directory structure (e.g. `project_name/app/page.tsx` for Next.js or `project_name/index.html` for single-page web apps).
+   - Dedicated Project Folder vs Root: When building a website or when the user mentions the website folder, place the files directly in the root workspace (`index.html`, `style.css`, `script.js`). If creating a multi-page app in a subfolder (e.g. `project_name/`), you must ALSO generate an `index.html` at the root of the workspace directory (`{AGENT_WORKSPACE_DIR}`).
 2. NEXT.JS 14+ APP ROUTER MODE (PREFERRED FOR REACT & FULLSTACK APPS):
    - Use Next.js 14+ App Router for React, Next.js, or complex dashboard/multi-page application requests.
    - Strict Client/Server Component & Import Rules:
@@ -1498,7 +1717,7 @@ Do NOT skip step 1. You MUST read the file first before analyzing."""
         
         vision_res = analyze_ui_screenshot_with_vision(
             image_input=image_input_or_filepath,
-            model_name=os.environ.get("VISION_MODEL", "gemma4:26b"),
+            model_name=os.environ.get("VISION_MODEL", "gemma4:31b-cloud"),
             ollama_base_url=self.ollama_base_url
         )
         return {

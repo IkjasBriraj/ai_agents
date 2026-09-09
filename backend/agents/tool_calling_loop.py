@@ -162,11 +162,28 @@ class ToolCallingLoop:
         
         if isinstance(last_msg, AIMessage) and getattr(last_msg, 'tool_calls', None):
             ai_msgs = [m for m in messages if isinstance(m, AIMessage) and getattr(m, 'tool_calls', None)]
-            if len(ai_msgs) >= 3:
-                last_3 = ai_msgs[-3:]
-                if last_3[0].tool_calls == last_3[1].tool_calls == last_3[2].tool_calls:
-                    logger.warning("Detected duplicate tool calls in 3 consecutive iterations. Forcing end.")
+            # 1. Detect duplicate calls in 2 consecutive iterations
+            if len(ai_msgs) >= 2:
+                last_2 = ai_msgs[-2:]
+                if last_2[0].tool_calls == last_2[1].tool_calls:
+                    logger.warning("Detected identical tool calls in consecutive iterations. Forcing end.")
                     return "end"
+
+            # 2. Detect 2-step alternating cycles (A -> B -> A -> B)
+            if len(ai_msgs) >= 4:
+                last_4 = ai_msgs[-4:]
+                if last_4[0].tool_calls == last_4[2].tool_calls and last_4[1].tool_calls == last_4[3].tool_calls:
+                    logger.warning("Detected alternating tool cycle (A->B->A->B). Forcing end.")
+                    return "end"
+
+            # 3. Detect consecutive tool execution errors
+            tool_msgs = [m for m in messages if isinstance(m, ToolMessage)]
+            if len(tool_msgs) >= 3:
+                last_3_errs = [m for m in tool_msgs[-3:] if "Error" in str(getattr(m, 'content', '')) or "Traceback" in str(getattr(m, 'content', ''))]
+                if len(last_3_errs) >= 3:
+                    logger.warning("Detected 3 consecutive tool execution errors. Forcing end.")
+                    return "end"
+
             return "execute_tools"
             
         return "end"

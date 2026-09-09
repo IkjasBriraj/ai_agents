@@ -17,8 +17,8 @@ DEFAULT_CONFIG = {
     },
     "allowed_paths": [],
     "allowed_commands": [],
-    "default_main_model": "gemma4:26b",
-    "default_code_model": "gemma4:26b",
+    "default_main_model": "gemma4:31b-cloud",
+    "default_code_model": "gemma4:31b-cloud",
     "strict_coding_rules": {
         "no_hardcoded_html": "STRICT PROJECT RULE: Never hardcode any HTML files or index.html templates in Python backend files. Code Agent must generate 100% of application files dynamically using LLM tools."
     }
@@ -103,10 +103,18 @@ def save_config(config: dict) -> None:
         print(f"Error saving agents_config.json: {e}")
 
 
+COMMON_DEFAULT_TOOLS = [
+    "save_personal_memory", "search_personal_memory", "extract_pdf_text",
+    "ocr_extract_image", "get_local_weather", "get_system_status", "convert_file_format",
+    "update_todo_list"
+]
+
 def get_enabled_tools_for_agent(agent_type: str) -> list:
     """Get list of enabled tools for a specific agent type"""
     config = load_config()
-    return config.get("agent_tools", {}).get(agent_type, [])
+    configured = config.get("agent_tools", {}).get(agent_type, [])
+    # Always include common personal knowledge & utility tools
+    return list(dict.fromkeys(configured + COMMON_DEFAULT_TOOLS))
 
 
 def get_allowed_paths() -> list:

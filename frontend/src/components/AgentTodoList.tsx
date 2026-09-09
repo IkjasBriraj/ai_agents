@@ -14,13 +14,15 @@ interface AgentTodoListProps {
   title?: string;
   className?: string;
   compact?: boolean;
+  onToggleItem?: (id: string) => void;
 }
 
 export const AgentTodoList: React.FC<AgentTodoListProps> = ({
   todoItems,
   title = "Live Agent Execution To-Do List",
   className,
-  compact = false
+  compact = false,
+  onToggleItem
 }) => {
   if (!todoItems || todoItems.length === 0) return null;
 
@@ -80,13 +82,16 @@ export const AgentTodoList: React.FC<AgentTodoListProps> = ({
           return (
             <div 
               key={item.id}
+              onClick={() => onToggleItem?.(item.id)}
               className={cn(
                 "flex items-start gap-3 p-2.5 rounded-lg border text-xs transition-all duration-200",
+                onToggleItem && "cursor-pointer hover:border-emerald-500/60 hover:bg-white/5",
                 isCompleted && "bg-emerald-950/25 border-emerald-500/40 text-emerald-100",
                 isInProgress && "bg-violet-950/40 border-violet-500/60 text-foreground shadow-md shadow-violet-500/10",
                 isFailed && "bg-red-950/30 border-red-500/40 text-red-200",
                 item.status === 'pending' && "bg-slate-900/40 border-slate-700/40 text-slate-400 opacity-80"
               )}
+              title={onToggleItem ? "Click to toggle status" : undefined}
             >
               {/* Status Icon */}
               <div className="shrink-0 mt-0.5">

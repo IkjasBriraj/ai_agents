@@ -753,10 +753,10 @@ Read the relevant files, identify issues, and apply fixes using file_operation(p
                         )
                     
                     # Vision UI audit
-                    emit_thinking("\n👁️ Running Gemma4:26b Vision UI Audit on browser screenshot...")
+                    from app.core.config import VISION_MODEL
+                    emit_thinking(f"\n👁️ Running {VISION_MODEL} Vision UI Audit on browser screenshot...")
                     try:
-                        from .vision_service import analyze_screenshot_bytes
-                        from .config import VISION_MODEL
+                        from app.services.vision_service import analyze_screenshot_bytes
                         screenshot_bytes = browser.take_screenshot()
                         vision_result = analyze_screenshot_bytes(
                             image_bytes=screenshot_bytes,
@@ -959,14 +959,16 @@ Read the affected files, fix the errors, and write the corrected code back using
                 
                 post_fix_report = f"\n\n### Post-Fix Browser Verification\n\n{post_console}\n\n{post_network}"
                 
-                # Close browser and stop live streaming
-                emit_thinking("\n🛑 Closing browser session...")
-                from .browser_service import close_browser_service
-                close_browser_service()
-                
             except Exception as e:
                 emit_thinking(f"\n⚠️ Post-fix verification error: {e}")
                 post_fix_report = f"\n\nPost-fix verification unavailable: {e}"
+            finally:
+                # Ensure browser is cleanly closed and live streaming stopped
+                try:
+                    from app.services.browser_service import close_browser_service
+                    close_browser_service()
+                except Exception:
+                    pass
 
         # --- Step 6: Send final screenshot results to frontend ---
         if screenshots_taken:
@@ -979,7 +981,8 @@ Read the affected files, fix the errors, and write the corrected code back using
             combined += f"## 🖥️ Browser Console Report\n\n{browser_report}\n\n---\n\n"
 
         if vision_report:
-            combined += f"## 👁️ Vision UI Audit (Gemma4:26b)\n\n{vision_report}\n\n---\n\n"
+            from app.core.config import VISION_MODEL
+            combined += f"## 👁️ Vision UI Audit ({VISION_MODEL})\n\n{vision_report}\n\n---\n\n"
 
         combined += f"## 🔧 Fix Report (Code Agent)\n\n{fix_text}"
 

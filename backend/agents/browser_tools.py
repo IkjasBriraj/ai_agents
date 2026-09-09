@@ -132,7 +132,7 @@ def browser_take_screenshot(name: str = "screenshot", full_page: bool = False) -
 def browser_vision_audit(prompt: str = "") -> str:
     """
     Take a screenshot of the current browser viewport and analyze it with the 
-    Gemma4:26b vision model for UI quality, layout bugs, and styling issues.
+    vision model (Gemma4:31b-cloud) for UI quality, layout bugs, and styling issues.
     
     Args:
         prompt: Optional custom prompt for the vision model. If empty, uses default UI audit prompt.
@@ -174,20 +174,20 @@ def browser_vision_audit(prompt: str = "") -> str:
                     "path": "_screenshots/vision_audit.png",
                     "url": "/api/screenshots/vision_audit.png",
                     "image_base64": f"data:image/png;base64,{img_b64}",
-                    "caption": "Vision UI Audit Screenshot (analyzed by Gemma4:26b)",
+                    "caption": f"Vision UI Audit Screenshot (analyzed by {VISION_MODEL})",
                     "done": False
                 }
             )
         
         if isinstance(vision_result, str):
-            return f"### 👁️ Gemma4:26b Vision UI Audit\n\n{vision_result}"
+            return f"### 👁️ {VISION_MODEL} Vision UI Audit\n\n{vision_result}"
         if not isinstance(vision_result, dict):
             vision_result = {}
             
         report = vision_result.get("report", "No vision report generated.")
         has_defects = vision_result.get("has_visual_defects", False)
         
-        result = f"### 👁️ Gemma4:26b Vision UI Audit\n\n{report}"
+        result = f"### 👁️ {VISION_MODEL} Vision UI Audit\n\n{report}"
         if has_defects:
             result += "\n\n⚠️ VISUAL DEFECTS DETECTED — Code fixes recommended."
         else:

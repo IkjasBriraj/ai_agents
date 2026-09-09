@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { OllamaService } from '@/services/ollama';
+import { OllamaService, multiAgentService } from '@/services/ollama';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { 
@@ -37,6 +37,8 @@ import {
   ExternalLink,
   Sparkles,
   Brain,
+  Volume2,
+  VolumeX,
 } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
@@ -45,6 +47,7 @@ import { AnimationSelector } from './AnimationSelector';
 import { ThinkingLevelSelector, type ThinkingLevel, getSavedThinkingLevel } from './ThinkingLevelSelector';
 import { playSiriActivationSound, playAgentProcessingPulse } from '@/lib/siriAudio';
 import { AgentTodoList, type TodoItem } from './AgentTodoList';
+import { PersonalJournalModal } from './PersonalJournalModal';
 
 
 
@@ -146,10 +149,172 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
   const [isTranscribing, setIsTranscribing] = useState(false);
   const recognitionRef = useRef<any>(null);
 
+  // Personal Knowledge Journal & RAG Memory
+  const [isJournalOpen, setIsJournalOpen] = useState<boolean>(false);
+  const [savedMemoryToast, setSavedMemoryToast] = useState<{
+    id?: number;
+    title?: string;
+    content: string;
+    category?: string;
+  } | null>(null);
+
+  // File Drag-and-Drop Ingestion ("Drop-on-the-Orb")
+  const [isDraggingFile, setIsDraggingFile] = useState<boolean>(false);
+  const [droppedFileSummary, setDroppedFileSummary] = useState<any | null>(null);
+
+  // Auto-speak responses toggle (persisted, defaults to true for 2-way voice)
+  const [autoSpeakResponses, setAutoSpeakResponses] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('senior_agent_auto_speak');
+      return saved !== null ? saved === 'true' : true;
+    }
+    return true;
+  });
+
+  // Text-to-Speech (TTS) voice playback state
+  const [currentlySpeakingIdx, setCurrentlySpeakingIdx] = useState<number | null>(null);
+  const activeUtteranceRef = useRef<any>(null);
+  const speechResumeIntervalRef = useRef<number | null>(null);
+  const shouldAutoSpeakNextRef = useRef<boolean>(false);
+
+  const stopSpeaking = () => {
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      try {
+        window.speechSynthesis.cancel();
+      } catch (e) {}
+    }
+    if (speechResumeIntervalRef.current) {
+      window.clearInterval(speechResumeIntervalRef.current);
+      speechResumeIntervalRef.current = null;
+    }
+    setCurrentlySpeakingIdx(null);
+    activeUtteranceRef.current = null;
+  };
+
+  const speakText = (text: string, messageIdx?: number) => {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+
+    stopSpeaking();
+    if (!text || !text.trim()) return;
+
+    try {
+      // 1. Clean markdown, formatting, links, and code blocks for crisp speech
+      let clean = text
+        .replace(/```[\s\S]*?```/g, 'I have generated the requested project files.')
+        .replace(/`([^`]+)`/g, '$1')
+        .replace(/!\[.*?\]\(.*?\)/g, '')
+        .replace(/\[(.*?)\]\(.*?\)/g, '$1')
+        .replace(/[#*~_>]/g, ' ')
+        .replace(/\n\s*\n/g, '. ')
+        .replace(/\n/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      // Keep it punchy and clear (up to 400 chars or first full sentences)
+      if (clean.length > 400) {
+        const sentenceEnd = clean.indexOf('.', 320);
+        clean = sentenceEnd !== -1 ? clean.slice(0, sentenceEnd + 1) : clean.slice(0, 400) + '...';
+      }
+
+      if (!clean) return;
+
+      const utterance = new SpeechSynthesisUtterance(clean);
+      activeUtteranceRef.current = utterance;
+      // Prevent Chromium GC bug mid-speech
+      (window as any)._currentSpeechUtterance = utterance;
+
+      utterance.rate = 1.0;
+      utterance.pitch = 1.0;
+
+      // Select natural English voice if available
+      const voices = window.speechSynthesis.getVoices();
+      const preferredVoice = voices.find(v => (v.name.includes('Natural') || v.name.includes('Google') || v.name.includes('Jenny') || v.name.includes('Aria') || v.name.includes('Samantha')) && v.lang.startsWith('en'))
+        || voices.find(v => v.lang.startsWith('en'))
+        || voices[0];
+      if (preferredVoice) {
+        utterance.voice = preferredVoice;
+      }
+
+      utterance.onstart = () => {
+        if (messageIdx !== undefined) {
+          setCurrentlySpeakingIdx(messageIdx);
+        } else {
+          setCurrentlySpeakingIdx(-1);
+        }
+      };
+
+      utterance.onend = () => {
+        setCurrentlySpeakingIdx(null);
+        activeUtteranceRef.current = null;
+        if (speechResumeIntervalRef.current) {
+          window.clearInterval(speechResumeIntervalRef.current);
+          speechResumeIntervalRef.current = null;
+        }
+      };
+
+      utterance.onerror = (e) => {
+        console.warn('Speech synthesis error:', e);
+        setCurrentlySpeakingIdx(null);
+        activeUtteranceRef.current = null;
+        if (speechResumeIntervalRef.current) {
+          window.clearInterval(speechResumeIntervalRef.current);
+          speechResumeIntervalRef.current = null;
+        }
+      };
+
+      // Workaround for Chromium pause-after-14-seconds bug
+      speechResumeIntervalRef.current = window.setInterval(() => {
+        if (window.speechSynthesis.paused) {
+          window.speechSynthesis.resume();
+        }
+      }, 4000);
+
+      window.speechSynthesis.resume();
+      window.speechSynthesis.speak(utterance);
+    } catch (err) {
+      console.warn('Speech synthesis error:', err);
+      setCurrentlySpeakingIdx(null);
+    }
+  };
+
+  const handleFileDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDraggingFile(false);
+    const files = e.dataTransfer.files;
+    if (!files || files.length === 0) return;
+
+    const file = files[0];
+    try {
+      setDroppedFileSummary({ loading: true, filename: file.name });
+      const res = await multiAgentService.dropUploadFile(file);
+      if (res.status === 'success') {
+        setDroppedFileSummary(res);
+        if (res.suggested_prompt && !prompt.trim()) {
+          setPrompt(res.suggested_prompt);
+        }
+      } else {
+        setDroppedFileSummary({ error: res.message || 'Failed to process file' });
+      }
+    } catch (err: any) {
+      setDroppedFileSummary({ error: err.message || 'File upload error' });
+    }
+  };
+
   const handleCopyMessage = (text: string, index: number) => {
     navigator.clipboard.writeText(text);
     setCopiedIndex(index);
     setTimeout(() => setCopiedIndex(null), 2000);
+  };
+
+  const handleToggleTodoItem = (id: string) => {
+    setTodoItems(prev => prev.map(t => {
+      if (t.id === id) {
+        const nextStatus: 'pending' | 'in_progress' | 'completed' = 
+          t.status === 'completed' ? 'pending' : t.status === 'pending' ? 'in_progress' : 'completed';
+        return { ...t, status: nextStatus };
+      }
+      return t;
+    }));
   };
 
   // Voice Recording Handler using Web Speech API
@@ -161,12 +326,23 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
       return;
     }
 
+    // Stop speaking previous assistant responses when recording starts
+    stopSpeaking();
+
     if (isRecording && recognitionRef.current) {
       // Stop recording
-      recognitionRef.current.stop();
+      try {
+        recognitionRef.current.stop();
+      } catch (e) {}
       setIsRecording(false);
       return;
     }
+
+    // Unlock / prime speech synthesis audio on user gesture
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.resume();
+    }
+    shouldAutoSpeakNextRef.current = true;
 
     // Start recording
     playSiriActivationSound();
@@ -176,7 +352,7 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
     recognition.lang = 'en-US';
     recognitionRef.current = recognition;
 
-    let finalTranscript = '';
+    let recognizedText = '';
 
     recognition.onstart = () => {
       setIsRecording(true);
@@ -184,25 +360,30 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
     };
 
     recognition.onresult = (event: any) => {
-      let interimTranscript = '';
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const transcript = event.results[i][0].transcript;
-        if (event.results[i].isFinal) {
-          finalTranscript += transcript + ' ';
+      let finalStr = '';
+      let interimStr = '';
+      for (let i = 0; i < event.results.length; i++) {
+        const item = event.results[i];
+        if (item.isFinal) {
+          finalStr += item[0].transcript + ' ';
         } else {
-          interimTranscript += transcript;
+          interimStr += item[0].transcript;
         }
       }
-      // Update prompt with final + interim text
-      setPrompt(() => (finalTranscript + interimTranscript).trim());
+      const combined = (finalStr + interimStr).trim();
+      recognizedText = combined;
+      setPrompt(combined);
     };
 
     recognition.onerror = (event: any) => {
-      console.error('Speech recognition error:', event.error);
-      setIsRecording(false);
-      setIsTranscribing(false);
+      console.warn('Speech recognition error:', event.error);
       if (event.error === 'not-allowed') {
         alert('Microphone access was denied. Please allow microphone permissions in your browser settings.');
+        setIsRecording(false);
+        setIsTranscribing(false);
+      } else if (event.error !== 'no-speech') {
+        setIsRecording(false);
+        setIsTranscribing(false);
       }
     };
 
@@ -210,20 +391,27 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
       setIsRecording(false);
       setIsTranscribing(false);
       recognitionRef.current = null;
-      // Set final transcript to prompt
-      if (finalTranscript.trim()) {
-        setPrompt(finalTranscript.trim());
+      if (recognizedText.trim()) {
+        setPrompt(recognizedText.trim());
       }
     };
 
-    recognition.start();
+    try {
+      recognition.start();
+    } catch (e) {
+      console.warn('Recognition start error:', e);
+      setIsRecording(false);
+    }
   };
 
-  // Cleanup speech recognition on unmount
+  // Cleanup speech recognition and synthesis on unmount
   useEffect(() => {
     return () => {
+      stopSpeaking();
       if (recognitionRef.current) {
-        recognitionRef.current.stop();
+        try {
+          recognitionRef.current.stop();
+        } catch (e) {}
       }
     };
   }, []);
@@ -296,7 +484,7 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
     }
   }, [isCloudModalOpen]);
 
-  const defaultOllamaModels = ['granite4.1:8b', 'gemma4:26b', 'llama3.3:70b', 'qwen2.5-coder:32b', 'deepseek-r1:14b', 'mistral-small:24b'];
+  const defaultOllamaModels = ['gemma4:31b-cloud', 'gemma4:26b', 'granite4.1:8b', 'llama3.3:70b', 'qwen2.5-coder:32b', 'deepseek-r1:14b', 'mistral-small:24b'];
 
   const providerModelsMap: Record<string, string[]> = {
     ollama: installedOllamaModels.length > 0 ? installedOllamaModels : defaultOllamaModels,
@@ -707,6 +895,17 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
           
           return updated;
         });
+
+        if (autoSpeakResponses || shouldAutoSpeakNextRef.current) {
+          speakText(finalContent, newMessages.length);
+          shouldAutoSpeakNextRef.current = false;
+        }
+
+        // Complete any open todo items on direct agent completion
+        setTodoItems(prev => {
+          if (!prev || prev.length === 0) return prev;
+          return prev.map(t => ({ ...t, status: 'completed' }));
+        });
       } catch (err) {
         console.error(err);
         const errMsg = 'An error occurred during direct interaction. Make sure the backend is running.';
@@ -797,6 +996,12 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
         setActiveTool(null);
         setStreamingPreview('');
         setThinkingStream('');
+
+        // Ensure 100% of tasks in todo list are marked completed when execution finishes
+        setTodoItems(prev => {
+          if (!prev || prev.length === 0) return prev;
+          return prev.map(t => ({ ...t, status: 'completed' }));
+        });
         
         const toolsParsed = liveTools.length > 0 ? liveTools : parseToolExecutions(fullResponseText, detectedAgent);
         
@@ -829,13 +1034,27 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
           }
           return prev;
         });
+
+        // Auto-speak response if voice companion mode is active or triggered via voice
+        if ((autoSpeakResponses || shouldAutoSpeakNextRef.current) && fullResponseText) {
+          setMessages(currentMsgs => {
+            const lastAssistantIdx = currentMsgs.length - 1;
+            speakText(fullResponseText, lastAssistantIdx >= 0 ? lastAssistantIdx : undefined);
+            return currentMsgs;
+          });
+          shouldAutoSpeakNextRef.current = false;
+        }
       };
 
       try {
         abortControllerRef.current = await OllamaService.chatMultiAgentStream(
           userText,
           (event: any) => {
-            if (event.type === 'agent_selection' && event.agent) {
+            if (event.type === 'memory_saved' && event.memory) {
+              // Real-time notification when memory is saved
+              setSavedMemoryToast(event.memory);
+              setTimeout(() => setSavedMemoryToast(null), 8000);
+            } else if (event.type === 'agent_selection' && event.agent) {
               const currentAgent = event.agent.toLowerCase();
               detectedAgent = currentAgent;
               setActiveRoutingAgent(currentAgent);
@@ -875,6 +1094,45 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
                 details: 'Tool execution initiated...'
               });
               updateLastAssistantMessage({ toolsExecuted: [...liveTools] });
+
+              // Live progressive update of To-Do items as tools start
+              const toolLower = (event.tool || '').toLowerCase();
+              const inputLower = inputStr.toLowerCase();
+              setTodoItems(prev => {
+                if (!prev || prev.length === 0) return prev;
+                let targetIdx = -1;
+                for (let i = 0; i < prev.length; i++) {
+                  const tLower = prev[i].title.toLowerCase();
+                  if ((inputLower.includes('html') || inputLower.includes('page') || inputLower.includes('structure')) && 
+                      (tLower.includes('html') || tLower.includes('structure') || tLower.includes('page') || tLower.includes('template'))) {
+                    targetIdx = i;
+                    break;
+                  } else if ((inputLower.includes('css') || inputLower.includes('style') || inputLower.includes('glass') || inputLower.includes('theme')) && 
+                             (tLower.includes('css') || tLower.includes('style') || tLower.includes('design') || tLower.includes('glass') || tLower.includes('theme'))) {
+                    targetIdx = i;
+                    break;
+                  } else if ((inputLower.includes('js') || inputLower.includes('script') || inputLower.includes('interact') || inputLower.includes('logic')) && 
+                             (tLower.includes('js') || tLower.includes('script') || tLower.includes('interact') || tLower.includes('logic') || tLower.includes('component'))) {
+                    targetIdx = i;
+                    break;
+                  } else if ((toolLower.includes('verify') || toolLower.includes('audit') || toolLower.includes('repair') || toolLower.includes('test')) && 
+                             (tLower.includes('verify') || tLower.includes('audit') || tLower.includes('check') || tLower.includes('test'))) {
+                    targetIdx = i;
+                    break;
+                  }
+                }
+                if (targetIdx === -1) {
+                  targetIdx = prev.findIndex(t => t.status === 'in_progress' || t.status === 'pending');
+                }
+                if (targetIdx !== -1) {
+                  return prev.map((item, idx) => {
+                    if (idx < targetIdx) return { ...item, status: 'completed' };
+                    if (idx === targetIdx) return { ...item, status: 'in_progress' };
+                    return item;
+                  });
+                }
+                return prev;
+              });
             } else if (event.type === 'tool_end') {
               setActiveTool(null);
               
@@ -897,6 +1155,20 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
                 liveTools[pendingIdx].details = outputStr || 'Execution finished successfully.';
               }
               updateLastAssistantMessage({ toolsExecuted: [...liveTools] });
+
+              // Advance completed status on To-Do list upon tool success
+              setTodoItems(prev => {
+                if (!prev || prev.length === 0) return prev;
+                const activeIdx = prev.findIndex(t => t.status === 'in_progress');
+                if (activeIdx !== -1) {
+                  return prev.map((item, idx) => {
+                    if (idx === activeIdx) return { ...item, status: 'completed' };
+                    if (idx === activeIdx + 1 && item.status === 'pending') return { ...item, status: 'in_progress' };
+                    return item;
+                  });
+                }
+                return prev;
+              });
             } else if (event.type === 'permission_request') {
               if (event.permission_type === 'command' && event.command) {
                 setPendingCommandPermission({
@@ -1570,7 +1842,27 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
 
         {/* PLAYGROUND RIGHT PANEL (CHAT AND OUTPUTS) */}
         <div className="lg:col-span-2 space-y-6">
-          <Card className={cn("carbon-card flex flex-col min-h-[780px] lg:min-h-[840px] relative transition-all duration-500 shadow-xl", (isTyping || isRecording) && "siri-fluid-border-frame shadow-[0_0_30px_rgba(168,85,247,0.35)]")}>
+          <Card 
+            onDragOver={(e) => { e.preventDefault(); setIsDraggingFile(true); }}
+            onDragLeave={(e) => {
+              // Only disable if leaving the card boundary
+              if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+              setIsDraggingFile(false);
+            }}
+            onDrop={handleFileDrop}
+            className={cn("carbon-card flex flex-col min-h-[780px] lg:min-h-[840px] relative transition-all duration-500 shadow-xl", (isTyping || isRecording) && "siri-fluid-border-frame shadow-[0_0_30px_rgba(168,85,247,0.35)]")}
+          >
+            {/* Drag and Drop Glowing Backdrop Overlay */}
+            {isDraggingFile && (
+              <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-slate-950/85 backdrop-blur-md border-4 border-dashed border-purple-500/80 rounded-2xl animate-in fade-in duration-200 pointer-events-none">
+                <SiriFluidOrb size="lg" state="recording" showGlow={true} />
+                <h3 className="text-xl font-bold text-white mt-4 tracking-tight">Drop on the Orb to Ingest</h3>
+                <p className="text-sm text-purple-300 max-w-sm text-center mt-1">
+                  Drop receipt/invoice image to extract into Excel, or drop PDF, CSV, or code files for instant analysis.
+                </p>
+              </div>
+            )}
+
             <CardHeader className="pb-4 border-b border-border/30 flex flex-col xl:flex-row items-start xl:items-center justify-between gap-4">
               <div>
                 <CardTitle className="text-xl sm:text-2xl font-light tracking-tight whitespace-nowrap">Interactive Hub Playground</CardTitle>
@@ -1595,6 +1887,41 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
                     <span className="hidden sm:inline">Implementation Plan</span>
                   </Button>
                 )}
+
+                {/* Personal Knowledge Journal Button */}
+                <Button
+                  variant="outline"
+                  onClick={() => setIsJournalOpen(true)}
+                  className="h-10 sm:h-11 font-mono text-xs sm:text-sm uppercase gap-2 border-purple-500/60 text-purple-300 bg-purple-500/10 hover:bg-purple-500/20 px-3 font-semibold shadow-md transition-all"
+                  title="Open Personal Knowledge Journal"
+                >
+                  <Brain className="w-4 h-4 text-purple-400" />
+                  <span className="hidden sm:inline">Journal</span>
+                </Button>
+
+                {/* Voice Read Aloud Toggle */}
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    const nextVal = !autoSpeakResponses;
+                    setAutoSpeakResponses(nextVal);
+                    if (typeof window !== 'undefined') {
+                      localStorage.setItem('senior_agent_auto_speak', String(nextVal));
+                      if (!nextVal) stopSpeaking();
+                    }
+                  }}
+                  className={cn(
+                    "h-10 sm:h-11 font-mono text-xs uppercase gap-1.5 px-3 border transition-all",
+                    autoSpeakResponses 
+                      ? "border-amber-500/60 text-amber-300 bg-amber-500/15 shadow-[0_0_10px_rgba(245,158,11,0.2)]" 
+                      : "border-border text-muted-foreground hover:text-foreground"
+                  )}
+                  title={autoSpeakResponses ? "Voice responses enabled (Click to mute)" : "Click to enable auto-spoken voice responses"}
+                >
+                  {autoSpeakResponses ? <Volume2 className="w-4 h-4 text-amber-400" /> : <VolumeX className="w-4 h-4" />}
+                  <span className="hidden md:inline">{autoSpeakResponses ? 'Voice On' : 'Mute'}</span>
+                </Button>
+
                 <Button
                   variant="outline"
                   onClick={() => setIsCloudModalOpen(true)}
@@ -1608,14 +1935,41 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
                 <span className="text-[10px] font-mono uppercase text-muted-foreground hidden sm:inline">
                   {isRecording ? 'Agentic Voice Core' : isTyping ? 'Agentic Fluid Core' : 'Agentic Core Intelligence'}
                 </span>
-                <SiriFluidOrb size="sm" state={isRecording ? 'recording' : isTyping ? 'thinking' : 'active'} />
+                <SiriFluidOrb 
+                  size="sm" 
+                  state={isRecording ? 'recording' : isTyping ? 'thinking' : 'active'} 
+                  enableVoice={true}
+                  isListening={isRecording}
+                  onToggleVoice={handleVoiceRecord}
+                />
               </div>
             </CardHeader>
             
             {/* CHAT LOGS */}
             <div className="flex-1 overflow-y-auto p-6 space-y-6 font-sans text-base min-h-[350px]">
+              {/* Real-Time Saved Memory Alert Toast */}
+              {savedMemoryToast && (
+                <div className="p-3 bg-gradient-to-r from-purple-950/80 to-slate-900 border border-purple-500/70 rounded-xl flex items-center justify-between gap-3 shadow-lg shadow-purple-500/25 animate-in slide-in-from-top-2 duration-300">
+                  <div className="flex items-center gap-3 text-xs text-purple-200">
+                    <div className="w-8 h-8 rounded-lg bg-purple-600/30 border border-purple-400/40 flex items-center justify-center text-base">
+                      🧠
+                    </div>
+                    <div>
+                      <strong className="text-purple-300 font-semibold block">Saved to Knowledge Journal!</strong>
+                      <span className="text-slate-200 italic">"{savedMemoryToast.content}"</span>
+                    </div>
+                  </div>
+                  <button 
+                    onClick={() => setIsJournalOpen(true)}
+                    className="px-3 py-1.5 bg-purple-600/40 hover:bg-purple-600 text-purple-200 hover:text-white text-xs font-medium rounded-lg border border-purple-400/40 transition-colors whitespace-nowrap shadow"
+                  >
+                    Open Journal
+                  </button>
+                </div>
+              )}
+
               {/* Live Executive Agent To-Do List Widget */}
-              <AgentTodoList todoItems={todoItems} />
+              <AgentTodoList todoItems={todoItems} onToggleItem={handleToggleTodoItem} />
 
               {messages.length === 0 && (
                 <div className="h-full flex flex-col justify-center items-center text-center py-20 opacity-70">
@@ -1651,19 +2005,45 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
                           </>
                         )}
                       </div>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-5 w-5 p-0 opacity-40 hover:opacity-100 transition-opacity"
-                        onClick={() => handleCopyMessage(msg.content, idx)}
-                        title="Copy message content"
-                      >
-                        {copiedIndex === idx ? (
-                          <Check className="w-3 h-3 text-emerald-500" />
-                        ) : (
-                          <Copy className="w-3 h-3 text-muted-foreground" />
+                      <div className="flex items-center gap-1">
+                        {!isUser && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className={cn(
+                              "h-5 w-5 p-0 transition-all",
+                              currentlySpeakingIdx === idx ? "opacity-100 text-amber-400" : "opacity-40 hover:opacity-100"
+                            )}
+                            onClick={() => {
+                              if (currentlySpeakingIdx === idx) {
+                                stopSpeaking();
+                              } else {
+                                speakText(msg.content, idx);
+                              }
+                            }}
+                            title={currentlySpeakingIdx === idx ? "Stop speaking" : "Read response aloud"}
+                          >
+                            {currentlySpeakingIdx === idx ? (
+                              <VolumeX className="w-3.5 h-3.5 text-amber-400 animate-pulse" />
+                            ) : (
+                              <Volume2 className="w-3.5 h-3.5 text-muted-foreground hover:text-amber-300" />
+                            )}
+                          </Button>
                         )}
-                      </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-5 w-5 p-0 opacity-40 hover:opacity-100 transition-opacity"
+                          onClick={() => handleCopyMessage(msg.content, idx)}
+                          title="Copy message content"
+                        >
+                          {copiedIndex === idx ? (
+                            <Check className="w-3 h-3 text-emerald-500" />
+                          ) : (
+                            <Copy className="w-3 h-3 text-muted-foreground" />
+                          )}
+                        </Button>
+                      </div>
                     </div>
 
                     {/* Chat Bubble Content */}
@@ -2160,6 +2540,31 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
 
             {/* PROMPT INPUT */}
             <div className="p-4 border-t border-border bg-muted/20">
+              {/* Dropped File Feedback Card */}
+              {droppedFileSummary && (
+                <div className="mb-3 p-3 bg-slate-900 border border-purple-500/50 rounded-xl flex items-center justify-between text-xs text-slate-200 gap-3 shadow-md animate-in slide-in-from-bottom-2 duration-200">
+                  <div className="flex items-center gap-2.5 overflow-hidden">
+                    <span className="text-xl">
+                      {droppedFileSummary.loading ? '⏳' : droppedFileSummary.file_type === 'receipt' ? '🧾' : droppedFileSummary.file_type === 'pdf' ? '📄' : '📁'}
+                    </span>
+                    <div className="truncate">
+                      <span className="font-semibold text-slate-100 block truncate">{droppedFileSummary.filename}</span>
+                      <p className="text-purple-300 text-[11px] truncate">
+                        {droppedFileSummary.loading ? 'Ingesting and analyzing dropped file...' : (droppedFileSummary.summary || droppedFileSummary.error)}
+                      </p>
+                    </div>
+                  </div>
+                  {!droppedFileSummary.loading && (
+                    <button 
+                      onClick={() => setDroppedFileSummary(null)}
+                      className="text-slate-400 hover:text-white px-2 py-1 bg-slate-800 rounded-lg hover:bg-slate-700"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+              )}
+
               {/* Recording Indicator */}
               {isRecording && (
                 <div className="flex items-center gap-3 mb-3 px-3.5 py-2 bg-red-500/10 border border-red-500/30 animate-pulse siri-fluid-border-frame">
@@ -2525,6 +2930,12 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
           </div>
         </div>
       )}
+
+      {/* Personal Knowledge Journal Modal */}
+      <PersonalJournalModal 
+        isOpen={isJournalOpen} 
+        onClose={() => setIsJournalOpen(false)} 
+      />
     </div>
   );
 };

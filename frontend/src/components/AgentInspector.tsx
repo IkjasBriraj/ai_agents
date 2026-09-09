@@ -31,7 +31,7 @@ const DEFAULT_APP_AGENTS = [
     name: 'Analysis & QA Agent',
     category: 'default',
     persona: 'Principal QA Engineer & Code Inspector',
-    description: 'Diagnoses runtime errors, analyzes stack traces, performs Gemma4:26b vision UI audits, and provides exact actionable code remediation specs.',
+    description: 'Diagnoses runtime errors, analyzes stack traces, performs Gemma4:31b-cloud vision UI audits, and provides exact actionable code remediation specs.',
     tools: ['browser_vision_audit', 'verify_app_browser_console', 'grep_search', 'recursive_list'],
     badgeColor: 'from-amber-500 to-orange-600',
     system_prompt: 'You are an Expert Analysis & QA Agent specialized in deep code diagnostics, real browser console verification, and UI visual inspection...'

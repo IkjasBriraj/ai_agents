@@ -31,10 +31,11 @@ class BrowserService:
         self._network_errors: List[Dict[str, Any]] = []
         self._current_url: str = ""
         self._live_streaming = False
-        self._stream_thread: Optional[threading.Thread] = None
+        self._queue = None
+        self._loop = None
         self._lock = threading.Lock()
 
-    def launch(self, url: str, wait_time: float = 3.0) -> Dict[str, Any]:
+    def launch(self, url: str, wait_time: float = 1.5) -> Dict[str, Any]:
         """
         Launch headless Chromium, navigate to URL, and start capturing console/network errors.
         
@@ -53,32 +54,45 @@ class BrowserService:
             self._page_errors = []
             self._network_errors = []
 
-            self._playwright = sync_playwright().start()
-            self._browser = self._playwright.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"]
-            )
-            self._page = self._browser.new_page(viewport={"width": 1280, "height": 720})
+            if self._playwright is None:
+                self._playwright = sync_playwright().start()
+                self._browser = self._playwright.chromium.launch(
+                    headless=True,
+                    args=["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"]
+                )
+                self._page = self._browser.new_page(viewport={"width": 1280, "height": 720})
 
-            # Attach console listener
-            self._page.on("console", self._on_console_message)
-            
-            # Attach page error listener (uncaught exceptions)
-            self._page.on("pageerror", self._on_page_error)
-            
-            # Attach network error listeners
-            self._page.on("response", self._on_response)
-            self._page.on("requestfailed", self._on_request_failed)
+                # Attach console listener
+                self._page.on("console", self._on_console_message)
+                
+                # Attach page error listener (uncaught exceptions)
+                self._page.on("pageerror", self._on_page_error)
+                
+                # Attach network error listeners
+                self._page.on("response", self._on_response)
+                self._page.on("requestfailed", self._on_request_failed)
 
-            # Navigate
-            self._page.goto(url, wait_until="networkidle", timeout=30000)
+            # Navigate using domcontentloaded with a resilient 10s timeout to prevent hanging on CDNs
+            try:
+                self._page.goto(url, wait_until="domcontentloaded", timeout=10000)
+            except Exception as nav_err:
+                logger.warning("Browser navigation warning for %s: %s", url, nav_err)
+
             self._current_url = url
 
-            # Wait for any async rendering to settle
-            time.sleep(wait_time)
+            # Wait briefly for rendering to settle
+            if wait_time > 0:
+                time.sleep(wait_time)
 
-            title = self._page.title()
-            
+            title = ""
+            try:
+                title = self._page.title()
+            except Exception:
+                pass
+
+            # Push live viewport frame to frontend if streaming is active
+            self.emit_live_frame()
+
             return {
                 "status": "success",
                 "url": url,
@@ -182,11 +196,14 @@ class BrowserService:
             return self._page.screenshot(full_page=full_page, type="png")
 
     def save_screenshot(self, output_path: str, full_page: bool = False) -> str:
-        """Take a screenshot and save it to disk. Returns the saved file path."""
+        """Take a screenshot, save it to disk, and broadcast live view. Returns the saved file path."""
         screenshot_bytes = self.take_screenshot(full_page=full_page)
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        dir_path = os.path.dirname(output_path)
+        if dir_path:
+            os.makedirs(dir_path, exist_ok=True)
         with open(output_path, "wb") as f:
             f.write(screenshot_bytes)
+        self.emit_live_frame()
         return output_path
 
     def get_page_title(self) -> str:
@@ -203,40 +220,46 @@ class BrowserService:
         """Get the current page URL."""
         return self._current_url
 
+    def emit_live_frame(self):
+        """
+        Safely capture the current browser viewport and push to the frontend SSE queue.
+        Called on the main Playwright thread to strictly avoid cross-thread greenlet deadlocks.
+        """
+        if not self._live_streaming or not self._page or not self._queue or not self._loop:
+            return
+        try:
+            with self._lock:
+                screenshot_bytes = self._page.screenshot(type="png")
+            b64 = base64.b64encode(screenshot_bytes).decode("utf-8")
+            self._loop.call_soon_threadsafe(
+                self._queue.put_nowait,
+                {
+                    "type": "browser_live",
+                    "image_base64": f"data:image/png;base64,{b64}",
+                    "url": self._current_url,
+                    "done": False
+                }
+            )
+        except Exception as e:
+            logger.debug("emit_live_frame error: %s", e)
+
     def start_live_streaming(self, queue, loop, interval: float = 0.5):
         """
-        Start streaming browser screenshots at ~2fps to the frontend via SSE queue.
-        Runs in a background thread safely.
+        Start live streaming browser screenshots to the frontend via SSE queue.
+        Screenshots are broadcast synchronously on the Playwright thread during events and actions.
         """
-        if self._live_streaming:
-            return
-
         self._live_streaming = True
+        self._queue = queue
+        self._loop = loop
+        # Immediately emit the initial viewport state
+        self.emit_live_frame()
 
-        def _stream_loop():
-            while self._live_streaming and self._page:
-                try:
-                    with self._lock:
-                        screenshot_bytes = self._page.screenshot(type="png")
-                    b64 = base64.b64encode(screenshot_bytes).decode("utf-8")
-                    loop.call_soon_threadsafe(
-                        queue.put_nowait,
-                        {
-                            "type": "browser_live",
-                            "image_base64": f"data:image/png;base64,{b64}",
-                            "url": self._current_url,
-                            "done": False
-                        }
-                    )
-                except Exception as e:
-                    logger.debug("Live streaming screenshot error: %s", e)
-                    break
-                time.sleep(interval)
-
-            # Send done event
+    def stop_live_streaming(self):
+        """Stop the live screenshot streaming and signal completion."""
+        if self._live_streaming and self._queue and self._loop:
             try:
-                loop.call_soon_threadsafe(
-                    queue.put_nowait,
+                self._loop.call_soon_threadsafe(
+                    self._queue.put_nowait,
                     {
                         "type": "browser_live",
                         "image_base64": "",
@@ -246,26 +269,23 @@ class BrowserService:
                 )
             except Exception:
                 pass
-
-        self._stream_thread = threading.Thread(target=_stream_loop, daemon=True)
-        self._stream_thread.start()
-
-    def stop_live_streaming(self):
-        """Stop the live screenshot streaming."""
         self._live_streaming = False
-        if self._stream_thread:
-            self._stream_thread.join(timeout=2.0)
-            self._stream_thread = None
+        self._queue = None
+        self._loop = None
 
     def reload_page(self):
-        """Reload the current page (useful after code fixes to check if errors persist)."""
+        """Reload the current page with resilient domcontentloaded timeout."""
         if self._page:
             # Clear previous errors before reload
             self._console_logs = []
             self._page_errors = []
             self._network_errors = []
-            self._page.reload(wait_until="networkidle", timeout=30000)
-            time.sleep(2.0)
+            try:
+                self._page.reload(wait_until="domcontentloaded", timeout=10000)
+            except Exception as e:
+                logger.warning("Browser reload warning: %s", e)
+            time.sleep(1.0)
+            self.emit_live_frame()
 
     def close(self):
         """Close browser and cleanup all resources."""

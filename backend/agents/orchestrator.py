@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import re
+import json
 import logging
 import traceback
 import asyncio
@@ -322,6 +323,16 @@ If the request is general or conversational, respond with "general"."""
         thinking_prompt = thinking_directives.get(thinking_level, thinking_directives["medium"])
         if thinking_prompt not in user_request:
             user_request += thinking_prompt
+
+        # Auto-extract personal facts / preferences and inject long-term RAG memory
+        try:
+            from .personal_memory import personal_memory
+            personal_memory.auto_extract_and_save_if_relevant(user_request)
+            mem_prompt = personal_memory.get_relevant_context_prompt(user_request)
+            if mem_prompt and mem_prompt not in user_request:
+                user_request += f"\n{mem_prompt}"
+        except Exception as me:
+            logger.debug(f"Personal memory context lookup failed: {me}")
 
         if "queue" in context and "loop" in context:
             from .specialized_agents import ThreadSafeAgentCallbackHandler
@@ -764,10 +775,10 @@ Read the relevant files, identify issues, and apply fixes using file_operation(p
                         )
                     
                     # Vision UI audit
-                    emit_thinking("\n👁️ Running Gemma4:26b Vision UI Audit on browser screenshot...")
+                    from .config import VISION_MODEL
+                    emit_thinking(f"\n👁️ Running {VISION_MODEL} Vision UI Audit on browser screenshot...")
                     try:
                         from .vision_service import analyze_screenshot_bytes
-                        from .config import VISION_MODEL
                         screenshot_bytes = browser.take_screenshot()
                         vision_result = analyze_screenshot_bytes(
                             image_bytes=screenshot_bytes,
@@ -970,14 +981,16 @@ Read the affected files, fix the errors, and write the corrected code back using
                 
                 post_fix_report = f"\n\n### Post-Fix Browser Verification\n\n{post_console}\n\n{post_network}"
                 
-                # Close browser and stop live streaming
-                emit_thinking("\n🛑 Closing browser session...")
-                from .browser_service import close_browser_service
-                close_browser_service()
-                
             except Exception as e:
                 emit_thinking(f"\n⚠️ Post-fix verification error: {e}")
                 post_fix_report = f"\n\nPost-fix verification unavailable: {e}"
+            finally:
+                # Ensure browser is cleanly closed and live streaming stopped
+                try:
+                    from .browser_service import close_browser_service
+                    close_browser_service()
+                except Exception:
+                    pass
 
         # --- Step 6: Send final screenshot results to frontend ---
         if screenshots_taken:
@@ -990,7 +1003,8 @@ Read the affected files, fix the errors, and write the corrected code back using
             combined += f"## 🖥️ Browser Console Report\n\n{browser_report}\n\n---\n\n"
 
         if vision_report:
-            combined += f"## 👁️ Vision UI Audit (Gemma4:26b)\n\n{vision_report}\n\n---\n\n"
+            from .config import VISION_MODEL
+            combined += f"## 👁️ Vision UI Audit ({VISION_MODEL})\n\n{vision_report}\n\n---\n\n"
 
         combined += f"## 🔧 Fix Report (Code Agent)\n\n{fix_text}"
 
@@ -1281,6 +1295,22 @@ Read the affected files, fix the errors, and write the corrected code back using
                 print(f"Error querying tokens for stream: {db_err}")
             finally:
                 db_session.close()
+
+            # Ensure all todo items are marked 100% completed on finish
+            try:
+                from .session_context import current_agent_context
+                ctx = current_agent_context.get()
+                if ctx and "todo_list" in ctx and ctx["todo_list"]:
+                    for item in ctx["todo_list"]:
+                        item["status"] = "completed"
+                    yield {
+                        "type": "todo_list_update",
+                        "items": [dict(it) for it in ctx["todo_list"]],
+                        "agent": selected_agent,
+                        "done": True
+                    }
+            except Exception as todo_err:
+                print(f"Todo finalize error: {todo_err}")
 
             yield {
                 "type": "response",

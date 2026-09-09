@@ -587,5 +587,49 @@ export const OllamaService = {
       throw new Error(response.data.message || 'Voice transcription failed');
     }
     return response.data.text ?? '';
+  },
+
+  async dropUploadFile(file: File): Promise<any> {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await axios.post(`${API_BASE}/api/multi-agent/files/drop-upload`, formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
+    return response.data;
+  },
+
+  async listPersonalMemories(category?: string): Promise<any> {
+    const url = category
+      ? `${API_BASE}/api/multi-agent/memory/list?category=${encodeURIComponent(category)}`
+      : `${API_BASE}/api/multi-agent/memory/list`;
+    const response = await axios.get(url);
+    return response.data;
+  },
+
+  async addPersonalMemory(content: string, category: string = 'preference', title: string = '', tags: string[] = []): Promise<any> {
+    const response = await axios.post(`${API_BASE}/api/multi-agent/memory/add`, {
+      content,
+      category,
+      title,
+      tags
+    });
+    return response.data;
+  },
+
+  async searchPersonalMemories(query: string, topK: number = 4): Promise<any> {
+    const response = await axios.post(`${API_BASE}/api/multi-agent/memory/search`, {
+      query,
+      top_k: topK
+    });
+    return response.data;
+  },
+
+  async deletePersonalMemory(memoryId: number): Promise<any> {
+    const response = await axios.delete(`${API_BASE}/api/multi-agent/memory/${memoryId}`);
+    return response.data;
   }
 };
+
+export const multiAgentService = OllamaService;

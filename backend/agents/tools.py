@@ -441,16 +441,27 @@ def resolve_target_file_path(path: str) -> str:
         ctx = current_agent_context.get()
         if ctx and "input" in ctx and isinstance(ctx["input"], str):
             task_input = ctx["input"]
-            folder_match = re.search(r'(?:in|into|inside|under)\s+(?:the\s+)?(?:folder|directory|dir)\s+[\'"`*]*([a-zA-Z0-9_\-]+)[\'"`*]*', task_input, re.IGNORECASE)
-            if not folder_match:
-                folder_match = re.search(r'(?:folder|directory)\s+[:=]?\s*[\'"`*]*([a-zA-Z0-9_\-]+)[\'"`*]*', task_input, re.IGNORECASE)
+            STOP_WORDS = {
+                'the', 'a', 'an', 'this', 'that', 'these', 'those', 'my', 'your', 'his', 'her', 'its', 'our', 'their',
+                'new', 'workspace', 'code', 'website', 'with', 'for', 'and', 'or', 'in', 'into', 'inside', 'under',
+                'on', 'at', 'to', 'from', 'by', 'of', 'please', 'make', 'create', 'build', 'have', 'has', 'had',
+                'is', 'are', 'was', 'were', 'be', 'been', 'being', 'it', 'so', 'as', 'if', 'general', 'main', 'root',
+                'here', 'there', 'where', 'which', 'who', 'whom', 'whose', 'why', 'how', 'all', 'any', 'both', 'each',
+                'few', 'more', 'most', 'other', 'some', 'such', 'no', 'nor', 'not', 'only', 'own', 'same', 'than',
+                'too', 'very', 'can', 'will', 'just', 'don', 'should', 'now', 'folder', 'directory', 'dir', 'files', 'file'
+            }
+            # If user explicitly refers to root website/workspace folder, do not prefix with a subfolder!
+            is_root_website = re.search(r'(?:in|into|inside|under)\s+(?:my\s+|the\s+)?(?:website|workspace|code)\s*(?:folder|directory|dir)?', task_input, re.IGNORECASE)
+            if not is_root_website:
+                folder_match = re.search(r'(?:in|into|inside|under)\s+(?:the\s+)?(?:folder|directory|dir)\s+[\'"`*]*([a-zA-Z0-9_\-]+)[\'"`*]*', task_input, re.IGNORECASE)
+                if not folder_match:
+                    folder_match = re.search(r'(?:folder|directory)\s*[:=]\s*[\'"`*]*([a-zA-Z0-9_\-]+)[\'"`*]*', task_input, re.IGNORECASE)
 
-            if folder_match:
-                folder_name = folder_match.group(1).strip()
-                reserved = ["the", "a", "an", "this", "my", "your", "new", "workspace", "code", "website"]
-                if folder_name and folder_name.lower() not in reserved:
-                    if not clean_p.startswith(folder_name + "/"):
-                        clean_p = f"{folder_name}/{clean_p}"
+                if folder_match:
+                    folder_name = folder_match.group(1).strip()
+                    if folder_name and folder_name.lower() not in STOP_WORDS:
+                        if not clean_p.startswith(folder_name + "/"):
+                            clean_p = f"{folder_name}/{clean_p}"
     except Exception:
         pass
 
@@ -2070,11 +2081,12 @@ def verify_app_browser_console(target_dir: str = "") -> str:
                 screenshot_file = f
                 break
 
+            vision_model = os.environ.get("VISION_MODEL", "gemma4:31b-cloud")
             vision_result = analyze_ui_screenshot_with_vision(
                 image_input=screenshot_file,
-                model_name=os.environ.get("VISION_MODEL", "gemma4:26b")
+                model_name=vision_model
             )
-            report.append("\n#### 👁️ Vision Model UI Quality Inspection (Gemma-4-26B)")
+            report.append(f"\n#### 👁️ Vision Model UI Quality Inspection ({vision_model})")
             report.append(vision_result.get("report", "No vision audit available."))
             
             if vision_result.get("has_visual_defects"):
@@ -2145,6 +2157,9 @@ def update_todo_list(items: Any) -> str:
         # Get streaming context from ContextVar
         from .session_context import current_agent_context
         ctx = current_agent_context.get()
+
+        if ctx:
+            ctx["todo_list"] = normalized_items
 
         if ctx and "queue" in ctx and "loop" in ctx:
             queue = ctx["queue"]
@@ -2590,7 +2605,7 @@ def _get_browser_tools() -> List[StructuredTool]:
             func=lambda x: browser_vision_audit(
                 safe_parse_input(x).get("prompt", "")
             ),
-            description="Take a browser screenshot and analyze it with Gemma4:26b vision model for UI quality, layout bugs, and styling issues. Input: dict with optional 'prompt' for custom analysis focus. Returns a detailed UI audit report."
+            description="Take a browser screenshot and analyze it with Gemma4:31b-cloud vision model for UI quality, layout bugs, and styling issues. Input: dict with optional 'prompt' for custom analysis focus. Returns a detailed UI audit report."
         ),
         StructuredTool.from_function(
             name="browser_close",
@@ -2740,7 +2755,7 @@ def get_code_agent_tools() -> List[StructuredTool]:
             ),
             description="Query workspace codebase using Hybrid RAG (dense vector similarity + BM25 keyword search). Input: dict with 'query' and optional 'k' (top results count)."
         ),
-    ] + _get_browser_tools()
+    ] + _get_browser_tools() + _get_knowledge_and_utility_tools()
 
 
 def get_research_agent_tools() -> List[StructuredTool]:
@@ -2782,7 +2797,7 @@ def get_research_agent_tools() -> List[StructuredTool]:
             func=lambda x: summarize_text(safe_parse_input(x).get("text", x if isinstance(x, str) else x)),
             description="Summarize long text. Input should be the text as a string."
         ),
-    ]
+    ] + _get_knowledge_and_utility_tools()
 
 
 def get_analysis_agent_tools() -> List[StructuredTool]:
@@ -2832,7 +2847,7 @@ def get_analysis_agent_tools() -> List[StructuredTool]:
             ),
             description="Execute Python code safely for testing and validation. Input should be a dict with 'code' and optional 'language' keys."
         ),
-    ] + _get_browser_tools()
+    ] + _get_browser_tools() + _get_knowledge_and_utility_tools()
 
 
 def csv_sheet_operation(operation: str, path: str, data: Optional[List[List[Any]]] = None) -> str:
@@ -2964,6 +2979,277 @@ def _generate_image_wrapper(
         return f"❌ Image generation error: {str(e)}\n{traceback.format_exc()}"
 
 
+def save_personal_memory(content: str, category: str = "preference", title: str = "") -> str:
+    """Save a user preference, personal fact, or project note into persistent memory."""
+    try:
+        from .personal_memory import personal_memory
+        result = personal_memory.save_memory(content=content, category=category, title=title, broadcast=True)
+        if "error" in result:
+            return f"❌ Error saving memory: {result['error']}"
+        return f"🧠 [SUCCESS] Successfully saved to Knowledge Journal:\n- **Category**: {result['category']}\n- **Title**: {result['title']}\n- **Content**: {result['content']}"
+    except Exception as e:
+        return f"Error saving personal memory: {str(e)}"
+
+
+def search_personal_memory(query: str, top_k: int = 4) -> str:
+    """Search user's personal knowledge journal and preferences using semantic RAG."""
+    try:
+        from .personal_memory import personal_memory
+        results = personal_memory.search_memories(query=query, top_k=top_k)
+        if not results:
+            return f"ℹ️ No matching memories found in Knowledge Journal for '{query}'."
+        out = [f"### 🧠 Knowledge Journal Results for '{query}':\n"]
+        for r in results:
+            cat = r.get("category", "preference").upper()
+            out.append(f"- **[{cat}] {r.get('title')}**: {r.get('content')}")
+        return "\n".join(out)
+    except Exception as e:
+        return f"Error searching personal memory: {str(e)}"
+
+
+def extract_pdf_text(path: str, max_pages: int = 20) -> str:
+    """Extract clean readable text and tables from a PDF document in workspace."""
+    try:
+        if not os.path.isabs(path) or path.startswith('/') or path.startswith('\\'):
+            rel_path = path.lstrip('/\\')
+            path = get_workspace_path(rel_path)
+
+        if not check_and_request_permission(path):
+            return f"Error: Access denied to path '{path}'"
+
+        if not os.path.exists(path):
+            return f"Error: PDF file does not exist at '{path}'"
+
+        import pypdf
+        reader = pypdf.PdfReader(path)
+        total_pages = len(reader.pages)
+        pages_to_read = min(total_pages, max_pages)
+
+        extracted = [f"### 📄 Extracted PDF: {os.path.basename(path)} ({total_pages} total pages, showing first {pages_to_read})\n"]
+        for idx in range(pages_to_read):
+            page = reader.pages[idx]
+            page_text = page.extract_text() or ""
+            if page_text.strip():
+                extracted.append(f"--- Page {idx + 1} ---\n{page_text.strip()}\n")
+
+        if total_pages > max_pages:
+            extracted.append(f"\n*... truncated at {max_pages} pages out of {total_pages}.*")
+
+        return "\n".join(extracted)
+    except Exception as e:
+        return f"Error extracting PDF text: {str(e)}"
+
+
+def ocr_extract_image(path: str, prompt: str = "") -> str:
+    """Extract text, receipt details, or document data from an image file in workspace using local vision model."""
+    try:
+        if not os.path.isabs(path) or path.startswith('/') or path.startswith('\\'):
+            rel_path = path.lstrip('/\\')
+            path = get_workspace_path(rel_path)
+
+        if not os.path.exists(path):
+            return f"Error: Image file does not exist at '{path}'"
+
+        import base64
+        with open(path, "rb") as f:
+            img_b64 = base64.b64encode(f.read()).decode("utf-8")
+
+        from .config import VISION_MODEL
+        import httpx
+
+        vision_prompt = prompt or "Extract all text, line items, numbers, dates, prices, and vendor info from this document or receipt image in clear, structured format."
+        
+        try:
+            res = httpx.post(
+                "http://localhost:11434/api/generate",
+                json={
+                    "model": VISION_MODEL,
+                    "prompt": vision_prompt,
+                    "images": [img_b64],
+                    "stream": False
+                },
+                timeout=60.0
+            )
+            if res.status_code == 200:
+                data = res.json()
+                return f"### 👁️ Image & Document Text Extraction ({os.path.basename(path)}):\n\n{data.get('response', 'No text detected.')}"
+        except Exception as ollama_err:
+            logger.warning(f"Ollama vision request failed: {ollama_err}")
+
+        return f"[INFO] Image '{os.path.basename(path)}' found ({os.path.getsize(path)} bytes). For full OCR text reading, ensure Ollama is running with a vision model like '{VISION_MODEL}'."
+    except Exception as e:
+        return f"Error analyzing image: {str(e)}"
+
+
+def get_local_weather(city: str = "") -> str:
+    """Fetch current weather conditions and forecast for a given city or current location."""
+    try:
+        import httpx
+        city_param = city.strip().replace(" ", "+") if city else ""
+        url = f"https://wttr.in/{city_param}?format=j1" if city_param else "https://wttr.in/?format=j1"
+        res = httpx.get(url, timeout=6.0, headers={"User-Agent": "curl/7.68.0"})
+        
+        if res.status_code == 200:
+            data = res.json()
+            cur = data.get("current_condition", [{}])[0]
+            area = data.get("nearest_area", [{}])[0]
+            city_name = area.get("areaName", [{}])[0].get("value", city or "Local Area")
+            country = area.get("country", [{}])[0].get("value", "")
+            temp_c = cur.get("temp_C", "N/A")
+            temp_f = cur.get("temp_F", "N/A")
+            feels_c = cur.get("FeelsLikeC", "N/A")
+            desc = cur.get("weatherDesc", [{}])[0].get("value", "Clear")
+            humidity = cur.get("humidity", "N/A")
+            wind_km = cur.get("windspeedKmph", "N/A")
+
+            return f"### 🌤️ Weather Report for {city_name}, {country}\n- **Condition**: {desc}\n- **Temperature**: {temp_c}°C ({temp_f}°F) [Feels like {feels_c}°C]\n- **Humidity**: {humidity}%\n- **Wind Speed**: {wind_km} km/h"
+
+        # Text fallback
+        text_url = f"https://wttr.in/{city_param}?format=3"
+        t_res = httpx.get(text_url, timeout=5.0)
+        return t_res.text if t_res.status_code == 200 else f"Weather info currently unavailable for {city}."
+    except Exception as e:
+        return f"Weather service temporarily unreachable: {str(e)}"
+
+
+def get_system_status() -> str:
+    """Check workspace storage capacity, system metrics, and local service health."""
+    try:
+        import shutil
+        import socket
+
+        total, used, free = shutil.disk_usage(AGENT_WORKSPACE_DIR)
+        gb = 1024 * 1024 * 1024
+
+        def is_port_open(port: int) -> bool:
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.settimeout(0.5)
+                    return s.connect_ex(('127.0.0.1', port)) == 0
+            except Exception:
+                return False
+
+        ollama_status = "🟢 Online" if is_port_open(11434) else "🔴 Offline"
+        backend_status = "🟢 Online" if is_port_open(8000) else "🔴 Offline"
+
+        return (
+            f"### 🖥️ Local System & Workspace Health\n"
+            f"- **Workspace Directory**: `{AGENT_WORKSPACE_DIR}`\n"
+            f"- **Disk Storage**: {free // gb} GB free / {total // gb} GB total ({used // gb} GB used)\n"
+            f"- **Ollama Local Engine (Port 11434)**: {ollama_status}\n"
+            f"- **Backend API (Port 8000)**: {backend_status}\n"
+            f"- **Python Version**: {sys.version.split()[0]}"
+        )
+    except Exception as e:
+        return f"Error retrieving system status: {str(e)}"
+
+
+def convert_file_format(source_path: str, target_format: str) -> str:
+    """Convert a file between formats (e.g. CSV to JSON, Markdown to HTML, JSON to CSV)."""
+    try:
+        if not os.path.isabs(source_path) or source_path.startswith('/') or source_path.startswith('\\'):
+            rel_path = source_path.lstrip('/\\')
+            source_path = get_workspace_path(rel_path)
+
+        if not os.path.exists(source_path):
+            return f"Error: Source file does not exist: {source_path}"
+
+        base, ext = os.path.splitext(source_path)
+        target_ext = target_format.lower().lstrip('.')
+        target_path = f"{base}.{target_ext}"
+
+        if ext.lower() == ".csv" and target_ext == "json":
+            with open(source_path, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                data = list(reader)
+            with open(target_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            return f"[SUCCESS] Converted CSV to JSON: '{os.path.relpath(target_path, AGENT_WORKSPACE_DIR)}' ({len(data)} items)."
+
+        elif ext.lower() == ".json" and target_ext == "csv":
+            with open(source_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list) and data and isinstance(data[0], dict):
+                keys = list(data[0].keys())
+                with open(target_path, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.DictWriter(f, fieldnames=keys)
+                    writer.writeheader()
+                    writer.writerows(data)
+                return f"[SUCCESS] Converted JSON to CSV: '{os.path.relpath(target_path, AGENT_WORKSPACE_DIR)}'."
+            return "Error: JSON must be an array of objects to convert to CSV."
+
+        elif ext.lower() in [".md", ".markdown"] and target_ext == "html":
+            with open(source_path, "r", encoding="utf-8") as f:
+                md_text = f.read()
+            html_content = f"<!DOCTYPE html><html><head><meta charset='utf-8'><title>{os.path.basename(base)}</title><style>body{{font-family:sans-serif;max-width:800px;margin:2rem auto;line-height:1.6;padding:1rem;color:#1e293b;}}</style></head><body><pre style='white-space:pre-wrap;'>{md_text}</pre></body></html>"
+            with open(target_path, "w", encoding="utf-8") as f:
+                f.write(html_content)
+            return f"[SUCCESS] Converted Markdown to HTML: '{os.path.relpath(target_path, AGENT_WORKSPACE_DIR)}'."
+
+        return f"Error: Conversion from '{ext}' to '{target_ext}' not supported."
+    except Exception as e:
+        return f"Error converting file format: {str(e)}"
+
+
+def _get_knowledge_and_utility_tools() -> List[StructuredTool]:
+    """Get common personal knowledge journal and system utility tools available across agents"""
+    return [
+        StructuredTool.from_function(
+            name="save_personal_memory",
+            func=lambda x: save_personal_memory(
+                safe_parse_input(x).get("content", x if isinstance(x, str) else ""),
+                safe_parse_input(x).get("category", "preference"),
+                safe_parse_input(x).get("title", "")
+            ),
+            description="Save a user preference, personal fact, or project note into persistent Knowledge Journal memory. Input: dict with 'content' (required fact or preference), optional 'category' ('preference'|'personal_fact'|'project_note'), optional 'title'."
+        ),
+        StructuredTool.from_function(
+            name="search_personal_memory",
+            func=lambda x: search_personal_memory(
+                safe_parse_input(x).get("query", x if isinstance(x, str) else ""),
+                int(safe_parse_input(x).get("top_k", 4))
+            ),
+            description="Search the user's personal knowledge journal and remembered preferences using semantic search. Input: dict with 'query' and optional 'top_k'."
+        ),
+        StructuredTool.from_function(
+            name="extract_pdf_text",
+            func=lambda x: extract_pdf_text(
+                safe_parse_input(x).get("path", x if isinstance(x, str) else ""),
+                int(safe_parse_input(x).get("max_pages", 20))
+            ),
+            description="Extract text and tables from a PDF document in workspace. Input: dict with 'path' (relative to workspace) and optional 'max_pages'."
+        ),
+        StructuredTool.from_function(
+            name="ocr_extract_image",
+            func=lambda x: ocr_extract_image(
+                safe_parse_input(x).get("path", x if isinstance(x, str) else ""),
+                safe_parse_input(x).get("prompt", "")
+            ),
+            description="Extract text, line items, numbers, and receipt details from an image file in workspace using vision OCR. Input: dict with 'path' and optional 'prompt'."
+        ),
+        StructuredTool.from_function(
+            name="get_local_weather",
+            func=lambda x: get_local_weather(
+                safe_parse_input(x).get("city", x if isinstance(x, str) else "")
+            ),
+            description="Fetch current weather conditions and forecast. Input: dict with optional 'city' (empty for current location)."
+        ),
+        StructuredTool.from_function(
+            name="get_system_status",
+            func=lambda x: get_system_status(),
+            description="Check local workspace disk storage, RAM/CPU capacity, and local server port status."
+        ),
+        StructuredTool.from_function(
+            name="convert_file_format",
+            func=lambda x: convert_file_format(
+                safe_parse_input(x).get("source_path", ""),
+                safe_parse_input(x).get("target_format", "")
+            ),
+            description="Convert a file between formats (CSV to JSON, JSON to CSV, Markdown to HTML). Input: dict with 'source_path' and 'target_format' ('json', 'csv', 'html')."
+        ),
+    ]
+
+
 def get_business_agent_tools() -> List[StructuredTool]:
     """Get tools for Business Agent"""
     from .business_tools import generate_presentation, generate_excel_sheet, read_excel_sheet
@@ -3050,7 +3336,7 @@ def get_business_agent_tools() -> List[StructuredTool]:
             ),
             description="Generate an image using AI diffusion models (SDXL, SD1.5, FLUX). Input: dict with 'prompt' (required text description), optional 'negative_prompt', 'width' (default 1024), 'height' (default 1024), 'model' ('auto'|'sdxl'|'sd15'|'flux'), 'seed' (int for reproducibility), 'filename' (output name without extension). Returns image file path and metadata."
         ),
-    ]
+    ] + _get_knowledge_and_utility_tools()
 
 
 # Tool registry

@@ -22,8 +22,8 @@ DEFAULT_CONFIG = {
     },
     "allowed_paths": [],
     "allowed_commands": [],
-    "default_main_model": "gemma4:26b",
-    "default_code_model": "gemma4:26b",
+    "default_main_model": "gemma4:31b-cloud",
+    "default_code_model": "gemma4:31b-cloud",
     "strict_coding_rules": {
         "no_hardcoded_html": "STRICT PROJECT RULE: Never hardcode any HTML files or index.html templates in Python backend files. Code Agent must generate 100% of application files dynamically using LLM tools."
     }

@@ -53,6 +53,16 @@ class HubMemoryCreate(BaseModel):
     content: str = Field(..., min_length=1, max_length=10000)
     category: str = "decision"
 
+class PersonalMemoryCreate(BaseModel):
+    content: str = Field(..., min_length=1, max_length=10000)
+    category: str = "preference"
+    title: str = ""
+    tags: List[str] = []
+
+class PersonalMemorySearch(BaseModel):
+    query: str
+    top_k: int = 4
+
 class AgentSchema(BaseModel):
     id: str
     hub_id: Optional[str] = None
@@ -210,7 +220,68 @@ def create_multi_agent_router(
         except Exception as e:
             return {"status": "error", "message": f"Voice transcription failed: {str(e)}"}
 
-    
+    @router.post("/files/drop-upload")
+    async def drop_upload_file(file: UploadFile = File(...)):
+        """Handle drag-and-drop file ingestion: receipts, PDFs, spreadsheets, and code."""
+        try:
+            from .file_ingestion_service import file_ingestion
+            content = await file.read()
+            if not content:
+                raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+            saved_path = file_ingestion.save_uploaded_file(file.filename, content)
+            result = file_ingestion.process_dropped_file(saved_path)
+            return {"status": "success", **result}
+        except Exception as e:
+            logger.error(f"Error handling drop upload: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.get("/memory/list")
+    async def list_personal_memories(category: Optional[str] = None, limit: int = 50):
+        """List remembered user preferences, facts, and notes."""
+        try:
+            from .personal_memory import personal_memory
+            mems = personal_memory.list_memories(category=category, limit=limit)
+            return {"status": "success", "memories": mems, "count": len(mems)}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.post("/memory/add")
+    async def add_personal_memory(req: PersonalMemoryCreate):
+        """Add a memory to Knowledge Journal with real-time UI notification."""
+        try:
+            from .personal_memory import personal_memory
+            mem = personal_memory.save_memory(
+                content=req.content,
+                category=req.category,
+                title=req.title,
+                tags=req.tags,
+                broadcast=True
+            )
+            return {"status": "success", "memory": mem}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.post("/memory/search")
+    async def search_personal_memories(req: PersonalMemorySearch):
+        """Search personal knowledge journal using semantic similarity."""
+        try:
+            from .personal_memory import personal_memory
+            matches = personal_memory.search_memories(query=req.query, top_k=req.top_k)
+            return {"status": "success", "query": req.query, "results": matches}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.delete("/memory/{memory_id}")
+    async def delete_personal_memory(memory_id: int):
+        """Delete a memory from Knowledge Journal."""
+        try:
+            from .personal_memory import personal_memory
+            deleted = personal_memory.delete_memory(memory_id)
+            return {"status": "success", "deleted": deleted}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
     @router.post("/agents/chat", response_model=AgentResponse)
     async def multi_agent_chat(request: MultiAgentRequest):
         """

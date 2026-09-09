@@ -182,3 +182,14 @@ class ScheduledTaskModel(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 Index('idx_scheduled_tasks_status_run_at', ScheduledTaskModel.status, ScheduledTaskModel.run_at)
+
+class PersonalMemoryModel(Base):
+    """Stores long-term personal knowledge, user preferences, facts, and notes."""
+    __tablename__ = "personal_memories"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    category = Column(String, default="preference", index=True)  # preference, personal_fact, project_note
+    title = Column(String, default="")
+    content = Column(Text, nullable=False)
+    tags = Column(JSON, default=list)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

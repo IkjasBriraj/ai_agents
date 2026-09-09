@@ -16,3 +16,4 @@ playwright
 python-pptx
 openpyxl
 xlsxwriter
+pypdf

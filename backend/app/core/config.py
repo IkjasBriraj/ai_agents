@@ -13,7 +13,7 @@ AGENT_WORKSPACE_DIR = r"D:\learning\code\website"
 SCREENSHOTS_DIR = os.path.join(AGENT_WORKSPACE_DIR, "_screenshots")
 
 # Vision model for UI screenshot analysis
-VISION_MODEL = "gemma4:26b"
+VISION_MODEL = os.environ.get("VISION_MODEL", "gemma4:31b-cloud")
 
 # Documents directory for presentations and spreadsheets
 DOCUMENTS_DIR = os.path.join(AGENT_WORKSPACE_DIR, "_documents")
@@ -120,11 +120,11 @@ def is_allowed_extension(filename: str) -> bool:
     return ext in ALLOWED_EXTENSIONS or ext == ''
 
 # Model configurations
-DEFAULT_MAIN_MODEL = "granite4.1:8b"
-DEFAULT_CODE_MODEL = "granite4.1:8b"
+DEFAULT_MAIN_MODEL = "gemma4:31b-cloud"
+DEFAULT_CODE_MODEL = "gemma4:31b-cloud"
 
 # Agent Mode configuration
-AGENT_MODE_MODEL = "granite4.1:8b"
+AGENT_MODE_MODEL = "gemma4:31b-cloud"
 OLLAMA_KEEP_ALIVE = "1h"
 CLAUDE_CODE_MAX_TURNS = 10
 CLAUDE_CODE_TIMEOUT = 120  # seconds

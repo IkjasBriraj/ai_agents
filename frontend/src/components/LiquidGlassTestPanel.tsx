@@ -15,7 +15,7 @@ export interface TestAgentProps {
 }
 
 export const PROVIDERS = [
-  { id: 'ollama', name: 'OLLAMA (Local First)', requiresKey: false, defaultModel: 'granite4.1:8b', models: ['granite4.1:8b', 'gemma4:26b', 'llama3.2:latest', 'qwen3.5:9b'] },
+  { id: 'ollama', name: 'OLLAMA (Local First)', requiresKey: false, defaultModel: 'gemma4:31b-cloud', models: ['gemma4:31b-cloud', 'gemma4:26b', 'granite4.1:8b', 'llama3.2:latest', 'qwen3.5:9b'] },
   { id: 'openai', name: 'OPENAI', requiresKey: true, defaultModel: 'gpt-4o', models: ['gpt-4o', 'gpt-4o-mini', 'o3-mini', 'gpt-4-turbo'] },
   { id: 'anthropic', name: 'ANTHROPIC', requiresKey: true, defaultModel: 'claude-3-5-sonnet-20241022', models: ['claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229'] },
   { id: 'ibm', name: 'IBM WATSONX', requiresKey: true, defaultModel: 'granite-3-8b-instruct', models: ['granite-3-8b-instruct', 'granite-3-20b-multilingual', 'llama-3-3-70b-instruct'] },

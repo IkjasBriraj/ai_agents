@@ -11,20 +11,32 @@ export interface SiriFluidOrbProps {
   className?: string;
   glowPulse?: boolean;
   mode?: AnimationMode; // Optional mode override. Uses global animation selector if omitted.
+  enableVoice?: boolean;
+  isListening?: boolean;
+  onToggleVoice?: () => void;
+  onSpeechResult?: (text: string) => void;
+  onListeningChange?: (isListening: boolean) => void;
 }
 
 export const SiriFluidOrb: React.FC<SiriFluidOrbProps> = ({
   size = 'md',
-  state = 'active',
+  state: externalState = 'active',
   showGlow = true,
   children,
   className,
   glowPulse = true,
   mode: propMode,
+  enableVoice = false,
+  isListening: propIsListening,
+  onToggleVoice,
+  onSpeechResult: _onSpeechResult,
+  onListeningChange: _onListeningChange,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [globalMode, setGlobalMode] = useState<AnimationMode>(getSavedAnimationMode());
 
+  const isListening = propIsListening !== undefined ? propIsListening : externalState === 'recording';
+  const state = isListening ? 'recording' : externalState;
   const activeMode = propMode || globalMode;
 
   useEffect(() => {
@@ -524,8 +536,11 @@ export const SiriFluidOrb: React.FC<SiriFluidOrbProps> = ({
 
   return (
     <div
+      onClick={enableVoice && onToggleVoice ? onToggleVoice : undefined}
+      title={enableVoice ? (isListening ? 'Click to stop listening' : 'Click to speak to Agent') : undefined}
       className={cn(
-        'siri-orb-base relative group overflow-visible',
+        'siri-orb-base relative group overflow-visible select-none',
+        enableVoice && onToggleVoice && 'cursor-pointer transition-transform hover:scale-105 active:scale-95',
         dimensionClasses[size] || dimensionClasses.md,
         showGlow && getGlowColor(),
         glowPulse && 'animate-pulse',
@@ -549,6 +564,18 @@ export const SiriFluidOrb: React.FC<SiriFluidOrbProps> = ({
         ref={canvasRef}
         className="w-full h-full rounded-full object-cover pointer-events-none z-0 filter contrast-125 saturate-150"
       />
+
+      {/* Microphone status badge when voice is active */}
+      {enableVoice && (
+        <div className={cn(
+          "absolute -bottom-1 -right-1 z-20 w-5 h-5 rounded-full flex items-center justify-center text-[10px] shadow-md border transition-all",
+          isListening 
+            ? "bg-red-600 text-white border-red-300 animate-bounce shadow-red-500/50" 
+            : "bg-slate-800 text-slate-300 border-slate-600 hover:bg-slate-700"
+        )}>
+          {isListening ? '🎙️' : '🎤'}
+        </div>
+      )}
 
       {/* Embedded Children (e.g. CPU Icon, Agent Avatar) */}
       {children && (
