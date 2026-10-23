@@ -235,6 +235,7 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
   const [canvasActiveTab, setCanvasActiveTab] = useState<CanvasTab>('preview');
   const [isCanvasExpanded, setIsCanvasExpanded] = useState<boolean>(false);
   const [splitRatio, setSplitRatio] = useState<number>(50);
+  const [isDraggingDivider, setIsDraggingDivider] = useState<boolean>(false);
   const [activePreviewHtml, setActivePreviewHtml] = useState<string>('');
   const [activeCodeSnippet, setActiveCodeSnippet] = useState<string>('');
   const [activeCodeFilename, setActiveCodeFilename] = useState<string>('workspace/index.html');
@@ -312,29 +313,61 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
     return null;
   }, [messages]);
 
+  // Live Real-Time Canvas Content Extractor (matches even while streaming)
+  const updateCanvasFromContent = (text: string, forcePreview: boolean = false) => {
+    if (!text || text.length < 10) return;
+
+    // 1. Check for in-progress or closed ```html or ```xml block
+    const htmlBlockMatch = text.match(/```(?:html|xml)\s*\n([\s\S]*?)(?:```|$)/i);
+    if (htmlBlockMatch && htmlBlockMatch[1].trim().length > 15) {
+      const code = htmlBlockMatch[1].trim();
+      setActivePreviewHtml(code);
+      setActiveCodeSnippet(code);
+      setActiveCodeFilename('workspace/index.html');
+      return;
+    }
+
+    // 2. Check for <!DOCTYPE html> or <html> tag anywhere in text
+    if (text.includes('<!DOCTYPE html>') || text.includes('<html') || (text.includes('<div') && text.includes('</div>'))) {
+      const htmlExtract = text.match(/(<!DOCTYPE html[\s\S]*?(?:<\/html>|$)|<html[\s\S]*?(?:<\/html>|$)|<div[\s\S]*?(?:<\/div>|$))/i);
+      if (htmlExtract && htmlExtract[1].trim().length > 20) {
+        const code = htmlExtract[1].trim();
+        setActivePreviewHtml(code);
+        setActiveCodeSnippet(code);
+        setActiveCodeFilename('workspace/index.html');
+        return;
+      }
+    }
+
+    // 3. Check for any in-progress or closed code block (tsx, jsx, python, js, etc.)
+    const codeBlockMatch = text.match(/```(\w+)?\s*\n([\s\S]*?)(?:```|$)/i);
+    if (codeBlockMatch && codeBlockMatch[2].trim().length > 15) {
+      const lang = (codeBlockMatch[1] || 'js').toLowerCase();
+      const code = codeBlockMatch[2].trim();
+      setActiveCodeSnippet(code);
+      setActiveCodeFilename(`workspace/code.${lang}`);
+      if (code.includes('<div') || code.includes('<svg') || code.includes('<button') || code.includes('<h1')) {
+        setActivePreviewHtml(code);
+      }
+      return;
+    }
+
+    if (forcePreview) {
+      setActiveCodeSnippet(text);
+      if (text.includes('<')) {
+        setActivePreviewHtml(text);
+      }
+    }
+  };
+
   // Automatically extract generated HTML and code blocks for the Live Canvas
   useEffect(() => {
     if (messages.length === 0) return;
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i];
       if (m.role === 'assistant' && m.content) {
-        const htmlMatch = m.content.match(/```(?:html|xml)\s*\n([\s\S]*?)```/i);
-        if (htmlMatch && htmlMatch[1]) {
-          setActivePreviewHtml(htmlMatch[1].trim());
-          setActiveCodeSnippet(htmlMatch[1].trim());
-          setActiveCodeFilename('workspace/index.html');
-          break;
-        }
-        const codeMatch = m.content.match(/```(\w+)?\s*\n([\s\S]*?)```/i);
-        if (codeMatch && codeMatch[2]) {
-          const lang = (codeMatch[1] || 'js').toLowerCase();
-          setActiveCodeSnippet(codeMatch[2].trim());
-          setActiveCodeFilename(`workspace/code.${lang}`);
-          if (codeMatch[2].includes('<html') || codeMatch[2].includes('<!DOCTYPE') || codeMatch[2].includes('<div')) {
-            setActivePreviewHtml(codeMatch[2].trim());
-          }
-          break;
-        }
+        updateCanvasFromContent(m.content);
+        break;
       }
     }
   }, [messages]);
@@ -1318,6 +1351,26 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
             } else if (event.type === 'tool_start' && event.tool) {
               setActiveTool(event.tool);
               
+              // If file_operation is writing a file, update canvas live immediately
+              try {
+                if (event.tool === 'file_operation' || (event.tool_input && String(event.tool_input).includes('file_operation'))) {
+                  let raw = event.tool_input;
+                  if (typeof raw === 'string' && raw.trim().startsWith('{')) {
+                    raw = JSON.parse(raw);
+                  }
+                  if (raw && (raw.content || raw.file_content)) {
+                    const fc = raw.content || raw.file_content;
+                    const fp = raw.path || raw.file_path || raw.filename || 'workspace/index.html';
+                    setActiveCodeSnippet(fc);
+                    setActiveCodeFilename(fp);
+                    if (fp.endsWith('.html') || fc.includes('<html') || fc.includes('<!DOCTYPE') || fc.includes('<div')) {
+                      setActivePreviewHtml(fc);
+                      setCanvasActiveTab('preview');
+                    }
+                  }
+                }
+              } catch {}
+
               // Extract tool input string for display
               let inputStr = '';
               if (event.tool_input) {
@@ -1375,6 +1428,9 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
               });
             } else if (event.type === 'tool_end') {
               setActiveTool(null);
+              if (event.output) {
+                updateCanvasFromContent(typeof event.output === 'string' ? event.output : JSON.stringify(event.output));
+              }
               
               // Update last pending tool to success
               const pendingIdx = liveTools.map(t => t.status).lastIndexOf('pending');
@@ -1508,6 +1564,7 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
               const cleanFull = event.content.replace(/<\|[^|]*\|?>?/g, '').replace(/<\/?tool_response>/g, '');
               setRoutingStep(3); // Streaming final output
               fullResponseText = cleanFull;
+              updateCanvasFromContent(cleanFull);
               
               if (event.token) {
                 const cleanToken = event.token.replace(/<\|[^|]*\|?>?/g, '').replace(/<\/?tool_response>/g, '');
@@ -2223,9 +2280,13 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
         {/* LEFT PANE: Conversation & Input */}
         {!isCanvasExpanded && (
           <div 
-            style={{ width: isCanvasOpen ? `${splitRatio}%` : '100%' }}
+            style={{ 
+              width: isCanvasOpen ? `${splitRatio}%` : '100%',
+              flex: isCanvasOpen ? `0 0 ${splitRatio}%` : '1 1 0%'
+            }}
             className={cn(
-              "flex flex-col h-full overflow-hidden transition-[width] duration-150 flex-1",
+              "flex flex-col h-full overflow-hidden",
+              !isDraggingDivider && "transition-[width] duration-150",
               !isCanvasOpen && "max-w-4xl mx-auto w-full"
             )}
           >
@@ -2235,7 +2296,7 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
                   Interactive Hub Playground
                   {isPlaygroundExtended && (
                     <span className="text-[10px] font-mono uppercase px-2.5 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/40 animate-pulse">
-                      Extended Cinema Mode
+                      Cinema Mode
                     </span>
                   )}
                 </CardTitle>
@@ -2389,7 +2450,7 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
                   <span className="hidden sm:inline">Provider: <strong className="text-emerald-800 dark:text-emerald-300 font-black">{cloudProvider.toUpperCase()}</strong> <span className="text-emerald-700/90 dark:text-emerald-400/90 font-normal">({selectedCloudModel})</span></span>
                   <span className="sm:hidden">{cloudProvider.toUpperCase()}</span>
                 </Button>
-                <ThinkingLevelSelector variant="dropdown" value={thinkingLevel} onChange={setThinkingLevel} />
+                
                 <span className="text-[10px] font-mono uppercase text-muted-foreground hidden sm:inline">
                   {isRecording ? 'Agentic Voice Core' : isTyping ? 'Agentic Fluid Core' : 'Agentic Core Intelligence'}
                 </span>
@@ -2431,7 +2492,7 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
 
               {messages.length === 0 && (
                 <div className="h-full flex flex-col justify-center items-center text-center py-20 opacity-70">
-                  <div className="p-4 border border-dashed rounded-none border-border mb-4">
+                  <div className="p-4 border border-dashed rounded-xl border-border mb-4">
                     <Bot className="w-12 h-12 text-primary" />
                   </div>
                   <h4 className="font-semibold text-lg">Multi-Agent Workspace</h4>
@@ -2518,7 +2579,7 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
                     {/* Chat Bubble Content */}
                     <div 
                       className={cn(
-                        "p-5 whitespace-pre-wrap leading-relaxed shadow-sm min-w-[200px] max-w-[95%] border transition-all duration-300",
+                        "p-5 whitespace-pre-wrap leading-relaxed shadow-sm min-w-[200px] max-w-[95%] border rounded-2xl transition-all duration-300",
                         isUser 
                           ? "bg-muted border-border font-medium text-foreground" 
                           : "bg-card border-border/80 text-foreground"
@@ -2952,8 +3013,8 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
                     ) : (
                       /* Placeholder text loading */
                       <div className="space-y-2 pt-2">
-                        <div className="h-3 bg-muted-foreground/15 w-full rounded-none animate-pulse"></div>
-                        <div className="h-3 bg-muted-foreground/15 w-3/4 rounded-none animate-pulse"></div>
+                        <div className="h-3 bg-muted-foreground/15 w-full rounded-xl animate-pulse"></div>
+                        <div className="h-3 bg-muted-foreground/15 w-3/4 rounded-xl animate-pulse"></div>
                       </div>
                     )}
                   </div>
@@ -2972,7 +3033,7 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
                     {showTerminal ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
                   </button>
                   {showTerminal && (
-                    <div className="bg-[#0d1117] border border-green-900/30 p-4 font-mono text-xs text-green-400 max-h-[250px] overflow-y-auto rounded-none animate-in slide-in-from-top-2 duration-200">
+                    <div className="bg-[#0d1117] border border-green-900/30 p-4 font-mono text-xs text-green-400 max-h-[250px] overflow-y-auto rounded-xl animate-in slide-in-from-top-2 duration-200">
                       <div className="text-[9px] text-green-600 uppercase tracking-wider mb-2 border-b border-green-900/30 pb-1">Terminal Output</div>
                       {terminalLines.map((line, i) => (
                         <div key={i} className="whitespace-pre-wrap leading-relaxed">
@@ -2987,7 +3048,7 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
 
               {/* Live Browser View Panel */}
               {(liveBrowserActive || liveBrowserImage) && (
-                <div className="mt-4 border border-blue-500/30 bg-[#0b0f19] rounded-none p-4 shadow-lg animate-in slide-in-from-top-2 duration-300">
+                <div className="mt-4 border border-blue-500/30 bg-[#0b0f19] rounded-xl p-4 shadow-lg animate-in slide-in-from-top-2 duration-300">
                   <div className="flex items-center justify-between mb-3 border-b border-blue-500/20 pb-2">
                     <div className="flex items-center gap-2">
                       <Monitor className="w-4 h-4 text-blue-400 animate-pulse" />
@@ -3094,7 +3155,7 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
                       handleSendMessage();
                     }
                   }}
-                  className="flex-1 p-4 bg-muted border border-border min-h-[75px] max-h-[120px] text-base focus:outline-none focus:ring-2 focus:ring-primary transition-all font-sans leading-relaxed"
+                  className="flex-1 p-4 bg-muted border border-border rounded-2xl min-h-[75px] max-h-[120px] text-base focus:outline-none focus:ring-2 focus:ring-purple-500 transition-all font-sans leading-relaxed"
                   placeholder={mode === 'orchestrated' 
                     ? "Ask the Main Orchestrator Agent to do something (e.g. generate website portfolios, analyze algorithms)..."
                     : `Direct message to ${selectedDirectAgent.toUpperCase()} Agent...`}
@@ -3105,7 +3166,7 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
                   disabled={isTyping}
                   variant="outline"
                   className={cn(
-                    "h-auto px-4 py-4 flex flex-col justify-center items-center border text-base transition-all duration-300",
+                    "h-auto px-4 py-4 flex flex-col justify-center items-center border rounded-2xl text-base transition-all duration-300",
                     isRecording
                       ? "border-red-500 bg-red-500/15 hover:bg-red-500/25 text-red-400 shadow-[0_0_15px_rgba(239,68,68,0.2)]"
                       : "border-border hover:border-primary/50 hover:bg-primary/5 text-muted-foreground hover:text-primary"
@@ -3133,7 +3194,7 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
                   <Button 
                     onClick={handleStopAgent}
                     variant="destructive"
-                    className="h-auto px-6 py-4 flex flex-col justify-center items-center border border-red-500/50 text-base bg-red-600 hover:bg-red-700 text-white"
+                    className="h-auto px-6 py-4 flex flex-col justify-center items-center border border-red-500/50 rounded-2xl text-base bg-red-600 hover:bg-red-700 text-white shadow-md"
                   >
                     <Square className="w-5 h-5 mb-1 text-white fill-white" />
                     <span className="text-xs uppercase font-mono tracking-widest text-white">Stop</span>
@@ -3142,7 +3203,7 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
                   <Button 
                     disabled={!prompt.trim()}
                     onClick={handleSendMessage}
-                    className="h-auto px-6 py-4 flex flex-col justify-center items-center border border-primary/50 text-base"
+                    className="h-auto px-6 py-4 flex flex-col justify-center items-center border border-purple-500/50 rounded-2xl text-base bg-purple-600 hover:bg-purple-500 shadow-md shadow-purple-500/20"
                   >
                     <Send className="w-5 h-5 mb-1 text-white" />
                     <span className="text-xs uppercase font-mono tracking-widest text-white">Execute</span>
@@ -3168,14 +3229,22 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
           <SplitPaneDivider 
             onResize={setSplitRatio}
             onReset={() => setSplitRatio(50)}
+            onDragStateChange={setIsDraggingDivider}
           />
         )}
 
         {/* RIGHT PANE: Interactive Canvas */}
         {isCanvasOpen && (
           <div 
-            style={{ width: isCanvasExpanded ? '100%' : `${100 - splitRatio}%` }}
-            className="h-full overflow-hidden transition-[width] duration-150 flex-1"
+            style={{ 
+              width: isCanvasExpanded ? '100%' : `${100 - splitRatio}%`,
+              flex: isCanvasExpanded ? '1 1 0%' : `0 0 ${100 - splitRatio}%`
+            }}
+            className={cn(
+              "h-full overflow-hidden",
+              !isDraggingDivider && "transition-[width] duration-150",
+              isDraggingDivider && "pointer-events-none select-none"
+            )}
           >
             <AgentCanvasRightPane
               activeTab={canvasActiveTab}
