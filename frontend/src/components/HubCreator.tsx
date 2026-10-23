@@ -77,7 +77,7 @@ export const HubCreator: React.FC = () => {
   const [agentName, setAgentName] = useState('');
   const [agentPersona, setAgentPersona] = useState('');
   const [agentSysPrompt, setAgentSysPrompt] = useState('');
-  const [agentModel, setAgentModel] = useState('granite4.1:8b');
+  const [agentModel, setAgentModel] = useState('gemma4:31b-cloud');
   const [agentParent, setAgentParent] = useState<string>('');
   const [selectedTools, setSelectedTools] = useState<string[]>([]);
   const [selectedMcps, setSelectedMcps] = useState<string[]>([]);

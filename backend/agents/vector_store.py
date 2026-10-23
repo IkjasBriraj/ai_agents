@@ -19,25 +19,94 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+def _local_hash_embedding(text: str, dim: int = 128) -> List[float]:
+    """Deterministic local semantic hash embedding fallback when Ollama embeddings are unavailable."""
+    vec = [0.0] * dim
+    words = re.findall(r'\w+', text.lower())
+    for w in words:
+        h = int(hashlib.md5(w.encode('utf-8')).hexdigest(), 16) % dim
+        vec[h] += 1.0
+    norm = math.sqrt(sum(x * x for x in vec))
+    if norm > 0:
+        vec = [x / norm for x in vec]
+    return vec
+
 class OllamaEmbeddings:
-    """Utility to get embeddings from local Ollama server."""
-    def __init__(self, model_name: str = "granite4.1:8b", base_url: str = "http://localhost:11434"):
-        self.model_name = model_name
+    """Utility to get embeddings with automatic dedicated embedding model discovery and fast deterministic fallback.
+    Never spawns heavy generative LLMs (like Granite or Gemma) in the background for embeddings.
+    """
+    def __init__(self, model_name: Optional[str] = None, base_url: str = "http://localhost:11434"):
+        # Explicit model name or environment variable (e.g. OLLAMA_EMBED_MODEL="nomic-embed-text")
+        env_embed_model = os.environ.get("OLLAMA_EMBED_MODEL", "").strip() or os.environ.get("EMBED_MODEL", "").strip()
+        self.model_name = model_name or env_embed_model or None
         self.base_url = base_url
+        self._checked_model = False
+        self._active_model: Optional[str] = None
+
+    def _resolve_model(self) -> Optional[str]:
+        """Resolve a dedicated embedding model. Returns None if only heavy LLMs are installed to avoid unwanted background model launches."""
+        if self._checked_model:
+            return self._active_model
+
+        self._checked_model = True
+
+        # 1. Explicit model provided by caller or env var
+        if self.model_name:
+            self._active_model = self.model_name
+            return self._active_model
+
+        # 2. Check if Ollama has a known lightweight dedicated embedding model installed
+        try:
+            resp = httpx.get(f"{self.base_url}/api/tags", timeout=1.5)
+            if resp.status_code == 200:
+                models = [m.get("name", "") for m in resp.json().get("models", [])]
+                embed_keywords = ["embed", "minilm", "bge-", "arctic-embed", "mxbai"]
+                for m in models:
+                    m_lower = m.lower()
+                    if any(kw in m_lower for kw in embed_keywords):
+                        logger.info(f"Using dedicated Ollama embedding model: {m}")
+                        self._active_model = m
+                        return self._active_model
+        except Exception:
+            pass
+
+        # If no dedicated embedding model is installed, do NOT run heavy text-generation LLMs (like granite:4.2 or gemma) in the background.
+        self._active_model = None
+        return None
 
     def embed_text(self, text: str) -> List[float]:
-        """Get embedding for a piece of text."""
-        try:
-            response = httpx.post(
-                f"{self.base_url}/api/embeddings",
-                json={"model": self.model_name, "prompt": text},
-                timeout=30.0
-            )
-            response.raise_for_status()
-            return response.json().get("embedding", [])
-        except Exception as e:
-            logger.error(f"Error getting embedding: {e}")
-            return []
+        """Get embedding for a piece of text with graceful fallback."""
+        if not text or not text.strip():
+            return [0.0] * 128
+
+        active_model = self._resolve_model()
+        if active_model:
+            try:
+                # 1. Try modern /api/embed endpoint first
+                resp = httpx.post(
+                    f"{self.base_url}/api/embed",
+                    json={"model": active_model, "input": text},
+                    timeout=5.0
+                )
+                if resp.status_code == 200:
+                    embs = resp.json().get("embeddings", [])
+                    if embs and len(embs) > 0 and len(embs[0]) > 0:
+                        return embs[0]
+                # 2. Try legacy /api/embeddings endpoint
+                response = httpx.post(
+                    f"{self.base_url}/api/embeddings",
+                    json={"model": active_model, "prompt": text},
+                    timeout=5.0
+                )
+                if response.status_code == 200:
+                    emb = response.json().get("embedding", [])
+                    if emb:
+                        return emb
+            except Exception as e:
+                logger.debug(f"Ollama embedding unavailable for {active_model}, using local hash vector: {e}")
+
+        # Fallback to local feature hash vector (0ms, 0 VRAM, no Ollama background process)
+        return _local_hash_embedding(text)
 
 class LocalVectorStore:
     """A simple, file-based vector store using numpy for cosine similarity."""
@@ -80,6 +149,8 @@ class LocalVectorStore:
 
         for item in self.data:
             doc_vec = np.array(item["embedding"])
+            if len(doc_vec) != len(query_vec):
+                continue  # dimension mismatch protection
             # Cosine Similarity: (A . B) / (||A|| * ||B||)
             norm_q = np.linalg.norm(query_vec)
             norm_d = np.linalg.norm(doc_vec)

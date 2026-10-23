@@ -6,6 +6,8 @@
       "execute_code",
       "generate_code",
       "file_operation",
+      "recursive_list",
+      "grep_search",
       "edit_file",
       "git_inspect",
       "search_symbols",
@@ -22,7 +24,6 @@
       "browser_take_screenshot",
       "browser_vision_audit"
     ],
-
     "research": [
       "web_search",
       "fetch_web_page",
@@ -32,6 +33,13 @@
     "analysis": [
       "analyze_code",
       "file_operation",
+      "recursive_list",
+      "grep_search",
+      "search_symbols",
+      "get_file_outline",
+      "query_codebase",
+      "edit_file",
+      "batch_verify_and_repair_files",
       "verify_app_browser_console",
       "browser_open_url",
       "browser_get_console_errors",

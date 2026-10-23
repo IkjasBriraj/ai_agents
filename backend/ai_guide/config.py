@@ -15,7 +15,7 @@ class AIGuideConfig:
     model_provider: str = "ollama"
     """LLM provider (ollama, openai, anthropic, azure, etc.)"""
     
-    model_name: str = "granite4.1:8b"
+    model_name: str = "gemma4:31b-cloud"
     """Model name to use"""
     
     api_base: Optional[str] = "http://localhost:11434"

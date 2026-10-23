@@ -10,9 +10,9 @@ CONFIG_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "age
 
 DEFAULT_CONFIG = {
     "agent_tools": {
-        "code": ["generate_image", "execute_code", "generate_code", "file_operation", "create_project", "analyze_code", "execute_terminal", "schedule_task", "verify_app_browser_console", "browser_open_url", "browser_get_console_errors", "browser_take_screenshot", "browser_vision_audit"],
+        "code": ["generate_image", "execute_code", "generate_code", "file_operation", "recursive_list", "grep_search", "create_project", "analyze_code", "execute_terminal", "schedule_task", "verify_app_browser_console", "browser_open_url", "browser_get_console_errors", "browser_take_screenshot", "browser_vision_audit"],
         "research": ["web_search", "summarize_text"],
-        "analysis": ["analyze_code", "file_operation", "verify_app_browser_console", "browser_open_url", "browser_get_console_errors", "browser_take_screenshot", "browser_vision_audit"],
+        "analysis": ["analyze_code", "file_operation", "recursive_list", "grep_search", "verify_app_browser_console", "browser_open_url", "browser_get_console_errors", "browser_take_screenshot", "browser_vision_audit"],
         "business": ["generate_image", "web_search", "fetch_web_page", "generate_presentation", "generate_excel_sheet", "read_excel_sheet", "csv_sheet_operation", "file_operation"]
     },
     "allowed_paths": [],

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { OllamaService, multiAgentService } from '@/services/ollama';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -17,7 +17,6 @@ import {
   Layers, 
   TrendingUp,
   RefreshCw,
-  FolderOpen,
   AlertTriangle,
   Terminal,
   Square,
@@ -30,6 +29,9 @@ import {
   Eye,
   Camera,
   Maximize2,
+  Minimize2,
+  GripVertical,
+  Move,
   X,
   Presentation,
   FileSpreadsheet,
@@ -39,6 +41,7 @@ import {
   Brain,
   Volume2,
   VolumeX,
+  Sliders,
 } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
@@ -48,6 +51,11 @@ import { ThinkingLevelSelector, type ThinkingLevel, getSavedThinkingLevel } from
 import { playSiriActivationSound, playAgentProcessingPulse } from '@/lib/siriAudio';
 import { AgentTodoList, type TodoItem } from './AgentTodoList';
 import { PersonalJournalModal } from './PersonalJournalModal';
+import { AgentCanvasRightPane, type CanvasTab } from './AgentCanvasRightPane';
+import { SplitPaneDivider } from './SplitPaneDivider';
+import { naturalVoice } from '@/services/naturalVoice';
+import { VoiceSettingsModal } from './VoiceSettingsModal';
+import { useAgentExecution, formatWorkerDisplayName } from '@/context/AgentExecutionContext';
 
 
 
@@ -55,6 +63,11 @@ interface Message {
   role: 'user' | 'assistant';
   content: string;
   agentUsed?: string;
+  workerName?: string;
+  routingReason?: string;
+  routingConfidence?: number;
+  executionFocus?: string;
+  decisionModel?: string;
   routingSteps?: string[];
   toolsExecuted?: Array<{
     toolName: string;
@@ -74,6 +87,18 @@ interface Message {
     caption?: string;
     image_base64?: string;
   }>;
+  memoriesSaved?: Array<{
+    id?: number;
+    title?: string;
+    content: string;
+    category?: string;
+  }>;
+  memoriesRecalled?: Array<{
+    id?: number;
+    title?: string;
+    content: string;
+    category?: string;
+  }>;
 }
 
 const renderTokenContent = (token: string): string => {
@@ -89,11 +114,61 @@ const fallbackTokenize = (text: string): string[] => {
 
 interface MultiAgentHubProps {
   onOpenPlayground?: () => void;
+  onOpenPreview?: (filePath?: string) => void;
 }
 
-export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }) => {
+export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, onOpenPreview }) => {
+  const { upsertLocalRun, removeLocalRun, registerStopHandler } = useAgentExecution();
   const [isHealthy, setIsHealthy] = useState<boolean | null>(null);
   const [loadingHealth, setLoadingHealth] = useState(true);
+  const [workerCatalog, setWorkerCatalog] = useState<Array<{
+    id: string;
+    name: string;
+    type: string;
+    description: string;
+    best_for?: string;
+    tools?: string[];
+    model?: string;
+  }>>([]);
+  const [orchestratorModelName, setOrchestratorModelName] = useState<string>('gemma4:31b-cloud');
+
+  // Extend / Fullscreen View Animations & Interactive Dragging State
+  const [isTopologyExtended, setIsTopologyExtended] = useState<boolean>(false);
+  const [isPlaygroundExtended, setIsPlaygroundExtended] = useState<boolean>(false);
+  const [workerOffsets, setWorkerOffsets] = useState<Record<string, { x: number; y: number }>>({});
+  const [draggingWorkerId, setDraggingWorkerId] = useState<string | null>(null);
+  const dragWorkerRef = useRef<{
+    id: string;
+    startX: number;
+    startY: number;
+    origX: number;
+    origY: number;
+  } | null>(null);
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!dragWorkerRef.current) return;
+      const { id, startX, startY, origX, origY } = dragWorkerRef.current;
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      setWorkerOffsets((prev) => ({
+        ...prev,
+        [id]: { x: origX + dx, y: origY + dy },
+      }));
+    };
+    const handleMouseUp = () => {
+      if (dragWorkerRef.current) {
+        dragWorkerRef.current = null;
+        setDraggingWorkerId(null);
+      }
+    };
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, []);
   
   // Chat state
   const [prompt, setPrompt] = useState('');
@@ -104,6 +179,17 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
   const [activeTool, setActiveTool] = useState<string | null>(null);
   const [streamingPreview, setStreamingPreview] = useState<string>('');
   const [thinkingStream, setThinkingStream] = useState<string>('');
+  const [activePromptText, setActivePromptText] = useState<string>('');
+  const [activeRunStartTime, setActiveRunStartTime] = useState<number>(Date.now());
+  const [routingDecision, setRoutingDecision] = useState<{
+    workerId: string;
+    workerName: string;
+    reasoning: string;
+    confidence: number;
+    executionFocus?: string;
+    decisionModel?: string;
+    runId?: string;
+  } | null>(null);
   
   // Token Visualizer states
   const [showExactTokens, setShowExactTokens] = useState<boolean>(false);
@@ -144,6 +230,15 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
   // Message Copying State
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
 
+  // Antigravity 2.0 / ChatGPT Codex Canvas States
+  const [isCanvasOpen, setIsCanvasOpen] = useState<boolean>(true);
+  const [canvasActiveTab, setCanvasActiveTab] = useState<CanvasTab>('preview');
+  const [isCanvasExpanded, setIsCanvasExpanded] = useState<boolean>(false);
+  const [splitRatio, setSplitRatio] = useState<number>(50);
+  const [activePreviewHtml, setActivePreviewHtml] = useState<string>('');
+  const [activeCodeSnippet, setActiveCodeSnippet] = useState<string>('');
+  const [activeCodeFilename, setActiveCodeFilename] = useState<string>('workspace/index.html');
+
   // Voice Recording State
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
@@ -151,6 +246,7 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
 
   // Personal Knowledge Journal & RAG Memory
   const [isJournalOpen, setIsJournalOpen] = useState<boolean>(false);
+  const [memoryCount, setMemoryCount] = useState<number>(0);
   const [savedMemoryToast, setSavedMemoryToast] = useState<{
     id?: number;
     title?: string;
@@ -158,9 +254,90 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
     category?: string;
   } | null>(null);
 
+  const refreshMemoryCount = async () => {
+    try {
+      const res = await multiAgentService.listPersonalMemories();
+      if (res && res.status === 'success') {
+        setMemoryCount(res.count ?? (res.memories?.length || 0));
+      }
+    } catch (e) {
+      console.debug('Failed to fetch memory count:', e);
+    }
+  };
+
+  useEffect(() => {
+    refreshMemoryCount();
+  }, []);
+
   // File Drag-and-Drop Ingestion ("Drop-on-the-Orb")
   const [isDraggingFile, setIsDraggingFile] = useState<boolean>(false);
   const [droppedFileSummary, setDroppedFileSummary] = useState<any | null>(null);
+
+  // Active tools history for right-pane trace
+  const activeToolsHistory = useMemo(() => {
+    const list: Array<{
+      tool: string;
+      input?: any;
+      output?: any;
+      timestamp?: string;
+      duration?: number;
+      status?: 'success' | 'running' | 'error';
+    }> = [];
+    for (const msg of messages) {
+      if (msg.role === 'assistant' && msg.toolsExecuted) {
+        for (const t of msg.toolsExecuted) {
+          list.push({
+            tool: (t as any).toolName || (t as any).tool || 'Tool Execution',
+            input: (t as any).input || (t as any).details,
+            output: (t as any).output || (t as any).result,
+            status: ((t as any).status as any) || 'success',
+            timestamp: (t as any).timestamp
+          });
+        }
+      }
+    }
+    if (activeTool) {
+      list.push({
+        tool: activeTool,
+        status: 'running'
+      });
+    }
+    return list;
+  }, [messages, activeTool]);
+
+  const lastAssistantMessage = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === 'assistant') return messages[i];
+    }
+    return null;
+  }, [messages]);
+
+  // Automatically extract generated HTML and code blocks for the Live Canvas
+  useEffect(() => {
+    if (messages.length === 0) return;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.role === 'assistant' && m.content) {
+        const htmlMatch = m.content.match(/```(?:html|xml)\s*\n([\s\S]*?)```/i);
+        if (htmlMatch && htmlMatch[1]) {
+          setActivePreviewHtml(htmlMatch[1].trim());
+          setActiveCodeSnippet(htmlMatch[1].trim());
+          setActiveCodeFilename('workspace/index.html');
+          break;
+        }
+        const codeMatch = m.content.match(/```(\w+)?\s*\n([\s\S]*?)```/i);
+        if (codeMatch && codeMatch[2]) {
+          const lang = (codeMatch[1] || 'js').toLowerCase();
+          setActiveCodeSnippet(codeMatch[2].trim());
+          setActiveCodeFilename(`workspace/code.${lang}`);
+          if (codeMatch[2].includes('<html') || codeMatch[2].includes('<!DOCTYPE') || codeMatch[2].includes('<div')) {
+            setActivePreviewHtml(codeMatch[2].trim());
+          }
+          break;
+        }
+      }
+    }
+  }, [messages]);
 
   // Auto-speak responses toggle (persisted, defaults to true for 2-way voice)
   const [autoSpeakResponses, setAutoSpeakResponses] = useState<boolean>(() => {
@@ -171,110 +348,53 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
     return true;
   });
 
-  // Text-to-Speech (TTS) voice playback state
+  // Text-to-Speech (TTS) natural voice playback state
   const [currentlySpeakingIdx, setCurrentlySpeakingIdx] = useState<number | null>(null);
-  const activeUtteranceRef = useRef<any>(null);
-  const speechResumeIntervalRef = useRef<number | null>(null);
+  const [isVoiceModalOpen, setIsVoiceModalOpen] = useState<boolean>(false);
+  const [activeVoiceLabel, setActiveVoiceLabel] = useState<string>('');
   const shouldAutoSpeakNextRef = useRef<boolean>(false);
 
+  useEffect(() => {
+    const updateVoiceLabel = () => {
+      const v = naturalVoice.getActiveVoice();
+      if (v) {
+        // Clean name for concise header display, e.g. "Jenny (Natural)"
+        const cleanName = v.name
+          .replace(/Microsoft /gi, '')
+          .replace(/Google /gi, '')
+          .replace(/ Online/gi, '')
+          .replace(/ - English.*/gi, '')
+          .trim();
+        setActiveVoiceLabel(cleanName || v.name);
+      }
+    };
+    updateVoiceLabel();
+    const unsubscribe = naturalVoice.subscribe(updateVoiceLabel);
+    return () => {
+      unsubscribe();
+      naturalVoice.stop();
+    };
+  }, []);
+
   const stopSpeaking = () => {
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      try {
-        window.speechSynthesis.cancel();
-      } catch (e) {}
-    }
-    if (speechResumeIntervalRef.current) {
-      window.clearInterval(speechResumeIntervalRef.current);
-      speechResumeIntervalRef.current = null;
-    }
+    naturalVoice.stop();
     setCurrentlySpeakingIdx(null);
-    activeUtteranceRef.current = null;
   };
 
   const speakText = (text: string, messageIdx?: number) => {
-    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
-
-    stopSpeaking();
     if (!text || !text.trim()) return;
-
-    try {
-      // 1. Clean markdown, formatting, links, and code blocks for crisp speech
-      let clean = text
-        .replace(/```[\s\S]*?```/g, 'I have generated the requested project files.')
-        .replace(/`([^`]+)`/g, '$1')
-        .replace(/!\[.*?\]\(.*?\)/g, '')
-        .replace(/\[(.*?)\]\(.*?\)/g, '$1')
-        .replace(/[#*~_>]/g, ' ')
-        .replace(/\n\s*\n/g, '. ')
-        .replace(/\n/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
-
-      // Keep it punchy and clear (up to 400 chars or first full sentences)
-      if (clean.length > 400) {
-        const sentenceEnd = clean.indexOf('.', 320);
-        clean = sentenceEnd !== -1 ? clean.slice(0, sentenceEnd + 1) : clean.slice(0, 400) + '...';
-      }
-
-      if (!clean) return;
-
-      const utterance = new SpeechSynthesisUtterance(clean);
-      activeUtteranceRef.current = utterance;
-      // Prevent Chromium GC bug mid-speech
-      (window as any)._currentSpeechUtterance = utterance;
-
-      utterance.rate = 1.0;
-      utterance.pitch = 1.0;
-
-      // Select natural English voice if available
-      const voices = window.speechSynthesis.getVoices();
-      const preferredVoice = voices.find(v => (v.name.includes('Natural') || v.name.includes('Google') || v.name.includes('Jenny') || v.name.includes('Aria') || v.name.includes('Samantha')) && v.lang.startsWith('en'))
-        || voices.find(v => v.lang.startsWith('en'))
-        || voices[0];
-      if (preferredVoice) {
-        utterance.voice = preferredVoice;
-      }
-
-      utterance.onstart = () => {
-        if (messageIdx !== undefined) {
-          setCurrentlySpeakingIdx(messageIdx);
-        } else {
-          setCurrentlySpeakingIdx(-1);
-        }
-      };
-
-      utterance.onend = () => {
+    naturalVoice.speak(text, {
+      onStart: () => {
+        setCurrentlySpeakingIdx(messageIdx !== undefined ? messageIdx : -1);
+      },
+      onEnd: () => {
         setCurrentlySpeakingIdx(null);
-        activeUtteranceRef.current = null;
-        if (speechResumeIntervalRef.current) {
-          window.clearInterval(speechResumeIntervalRef.current);
-          speechResumeIntervalRef.current = null;
-        }
-      };
-
-      utterance.onerror = (e) => {
-        console.warn('Speech synthesis error:', e);
+      },
+      onError: (err) => {
+        console.warn('Natural voice playback error:', err);
         setCurrentlySpeakingIdx(null);
-        activeUtteranceRef.current = null;
-        if (speechResumeIntervalRef.current) {
-          window.clearInterval(speechResumeIntervalRef.current);
-          speechResumeIntervalRef.current = null;
-        }
-      };
-
-      // Workaround for Chromium pause-after-14-seconds bug
-      speechResumeIntervalRef.current = window.setInterval(() => {
-        if (window.speechSynthesis.paused) {
-          window.speechSynthesis.resume();
-        }
-      }, 4000);
-
-      window.speechSynthesis.resume();
-      window.speechSynthesis.speak(utterance);
-    } catch (err) {
-      console.warn('Speech synthesis error:', err);
-      setCurrentlySpeakingIdx(null);
-    }
+      },
+    });
   };
 
   const handleFileDrop = async (e: React.DragEvent) => {
@@ -452,7 +572,11 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
   // Cloud LLM Provider State
   const [isCloudModalOpen, setIsCloudModalOpen] = useState<boolean>(false);
   const [cloudProvider, setCloudProvider] = useState<string>(() => localStorage.getItem('agentic_cloud_provider') || 'ollama');
-  const [selectedCloudModel, setSelectedCloudModel] = useState<string>(() => localStorage.getItem('agentic_cloud_model') || 'granite4.1:8b');
+  const [selectedCloudModel, setSelectedCloudModel] = useState<string>(() => {
+    const saved = localStorage.getItem('agentic_cloud_model');
+    if (saved && saved !== 'granite4.1:8b' && saved !== 'granite4.2:8b') return saved;
+    return 'gemma4:31b-cloud';
+  });
   const [cloudApiKey, setCloudApiKey] = useState<string>(() => localStorage.getItem('agentic_cloud_api_key') || '');
   const [installedOllamaModels, setInstalledOllamaModels] = useState<string[]>([]);
 
@@ -652,10 +776,16 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
   const refreshSystemData = async () => {
     setLoadingHealth(true);
     try {
-      const [_, healthData] = await Promise.all([
+      const [agentsData, healthData] = await Promise.all([
         OllamaService.getMultiAgents(),
         OllamaService.getMultiAgentHealth()
       ]);
+      if (agentsData && Array.isArray(agentsData.agents)) {
+        setWorkerCatalog(agentsData.agents);
+      }
+      if (agentsData?.orchestrator_model) {
+        setOrchestratorModelName(agentsData.orchestrator_model);
+      }
       setIsHealthy(healthData && healthData.status === 'healthy');
     } catch (err) {
       console.error("Failed to fetch system data", err);
@@ -667,14 +797,65 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
 
   useEffect(() => {
     refreshSystemData();
+    // Do NOT abort active agent runs on unmount so background execution continues across page changes
     return () => {
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
-      OllamaService.stopMultiAgent('default').catch(() => {});
       typingTimersRef.current.forEach(timer => window.clearInterval(timer));
     };
   }, []);
+
+  // Sync live running agent state with Global AgentExecutionContext so all pages see which agent is running
+  useEffect(() => {
+    const localRunKey = 'multi-agent-hub-active';
+    if (isTyping) {
+      const stepLabel =
+        routingStep === 1
+          ? 'routing'
+          : activeTool
+          ? 'using_tool'
+          : routingStep === 3
+          ? 'streaming'
+          : 'executing';
+      upsertLocalRun({
+        id: localRunKey,
+        runId: routingDecision?.runId,
+        source: 'multi-agent',
+        sourceLabel: 'Multi-Agent Hub',
+        targetTab: 'multi-agent',
+        workerId: activeRoutingAgent || 'orchestrator',
+        workerName: routingDecision?.workerName || formatWorkerDisplayName(activeRoutingAgent),
+        routingReason:
+          routingDecision?.reasoning ||
+          (mode === 'direct'
+            ? `Direct invocation of ${formatWorkerDisplayName(selectedDirectAgent)}`
+            : `Orchestrator (${orchestratorModelName}) evaluating worker catalog to spawn optimal specialist...`),
+        confidence: routingDecision?.confidence ?? 0.94,
+        executionFocus: routingDecision?.executionFocus,
+        activeTool: activeTool,
+        step: stepLabel,
+        prompt: activePromptText,
+        model: routingDecision?.decisionModel || orchestratorModelName,
+        startedAt: activeRunStartTime,
+        canStop: true,
+      });
+      registerStopHandler(localRunKey, handleStopAgent);
+    } else {
+      removeLocalRun(localRunKey);
+    }
+  }, [
+    isTyping,
+    activeRoutingAgent,
+    routingStep,
+    activeTool,
+    routingDecision,
+    activePromptText,
+    activeRunStartTime,
+    mode,
+    selectedDirectAgent,
+    orchestratorModelName,
+    upsertLocalRun,
+    removeLocalRun,
+    registerStopHandler,
+  ]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -796,6 +977,7 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
       abortControllerRef.current = null;
     }
     OllamaService.stopMultiAgent('default').catch(() => {});
+    removeLocalRun('multi-agent-hub-active');
     setIsTyping(false);
     setRoutingStep(0);
     setStreamingPreview('');
@@ -824,6 +1006,9 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
 
     const userText = prompt;
     setPrompt('');
+    setActivePromptText(userText);
+    setActiveRunStartTime(Date.now());
+    setRoutingDecision(null);
     
     // Add user message
     const newMessages = [...messages, { role: 'user' as const, content: userText }];
@@ -1053,16 +1238,63 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
             if (event.type === 'memory_saved' && event.memory) {
               // Real-time notification when memory is saved
               setSavedMemoryToast(event.memory);
+              setMemoryCount(prev => prev + 1);
               setTimeout(() => setSavedMemoryToast(null), 8000);
+              
+              // Attach saved memory to the active assistant message
+              setMessages(currentMsgs => {
+                if (currentMsgs.length === 0) return currentMsgs;
+                const copy = [...currentMsgs];
+                const lastIdx = copy.length - 1;
+                if (copy[lastIdx].role === 'assistant') {
+                  const existing = copy[lastIdx].memoriesSaved || [];
+                  copy[lastIdx] = {
+                    ...copy[lastIdx],
+                    memoriesSaved: [...existing, event.memory]
+                  };
+                }
+                return copy;
+              });
+            } else if (event.type === 'memory_recalled' && event.memories) {
+              // Attach recalled context to the active assistant message
+              setMessages(currentMsgs => {
+                if (currentMsgs.length === 0) return currentMsgs;
+                const copy = [...currentMsgs];
+                const lastIdx = copy.length - 1;
+                if (copy[lastIdx].role === 'assistant') {
+                  copy[lastIdx] = {
+                    ...copy[lastIdx],
+                    memoriesRecalled: event.memories
+                  };
+                }
+                return copy;
+              });
             } else if (event.type === 'agent_selection' && event.agent) {
               const currentAgent = event.agent.toLowerCase();
+              const resolvedWorkerName = event.worker_name || formatWorkerDisplayName(currentAgent);
+              const resolvedReason = event.routing_reason || `Orchestrator dynamically spawned ${resolvedWorkerName} based on capability analysis.`;
+              const resolvedConfidence = typeof event.confidence === 'number' ? event.confidence : 0.94;
+              const resolvedFocus = event.execution_focus || '';
+              const resolvedModel = event.decision_model || orchestratorModelName;
+
               detectedAgent = currentAgent;
               setActiveRoutingAgent(currentAgent);
               setRoutingStep(2); // Agent routed!
+              setRoutingDecision({
+                workerId: currentAgent,
+                workerName: resolvedWorkerName,
+                reasoning: resolvedReason,
+                confidence: resolvedConfidence,
+                executionFocus: resolvedFocus,
+                decisionModel: resolvedModel,
+                runId: event.run_id
+              });
               
               // Set visual tool hint
               if (currentAgent === 'code') {
                 setActiveTool('file_operation');
+              } else if (currentAgent === 'analyze_and_fix') {
+                setActiveTool('workspace_audit');
               } else if (currentAgent === 'research') {
                 setActiveTool('web_search');
               } else if (currentAgent === 'analysis') {
@@ -1073,7 +1305,15 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
 
               updateLastAssistantMessage({
                 agentUsed: currentAgent,
-                routingSteps: ['Classified Prompt Intent', `Routed to ${currentAgent.toUpperCase()} AGENT`]
+                workerName: resolvedWorkerName,
+                routingReason: resolvedReason,
+                routingConfidence: resolvedConfidence,
+                executionFocus: resolvedFocus,
+                decisionModel: resolvedModel,
+                routingSteps: [
+                  `LLM Router (${resolvedModel}) evaluated worker catalog`,
+                  `Spawned Worker: ${resolvedWorkerName} (${Math.round(resolvedConfidence * 100)}% match)`
+                ]
               });
             } else if (event.type === 'tool_start' && event.tool) {
               setActiveTool(event.tool);
@@ -1542,337 +1782,505 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
 
       {/* Featured Playground Banner */}
       {onOpenPlayground && (
-        <div className="bg-gradient-to-r from-purple-900/60 via-indigo-900/50 to-blue-900/60 border border-purple-500/40 p-4 rounded-lg flex flex-col sm:flex-row items-center justify-between gap-4 shadow-lg animate-in fade-in duration-500">
+        <div className="bg-gradient-to-r from-purple-500/10 via-indigo-500/10 to-blue-500/10 dark:from-purple-900/60 dark:via-indigo-900/50 dark:to-blue-900/60 border border-purple-500/40 p-4 rounded-xl flex flex-col sm:flex-row items-center justify-between gap-4 shadow-md animate-in fade-in duration-500">
           <div className="flex items-center gap-3">
-            <div className="p-2.5 bg-purple-500/20 rounded-lg border border-purple-400/30">
-              <Sparkles className="w-6 h-6 text-amber-300 animate-pulse" />
+            <div className="p-2.5 bg-purple-500/15 dark:bg-purple-500/20 rounded-lg border border-purple-500/30">
+              <Sparkles className="w-6 h-6 text-amber-500 dark:text-amber-300 animate-pulse" />
             </div>
             <div>
               <div className="font-semibold text-sm text-foreground flex items-center gap-2">
-                Play with Your Ideas — AI Studio Playground
-                <span className="text-[10px] bg-purple-500/30 text-purple-200 border border-purple-400/40 px-2 py-0.5 font-mono">NEW</span>
+                Play with Your Ideas — AI Studio Playground & Live Preview Studio
+                <span className="text-[10px] bg-purple-500/20 text-purple-700 dark:text-purple-200 border border-purple-500/40 px-2 py-0.5 rounded font-mono">NEW</span>
               </div>
               <p className="text-xs text-muted-foreground mt-0.5">
-                Experiment freely with Research & Business agents, system prompt tuning, quick idea templates, and the new web fetch tool.
+                Experiment freely with Research & Business agents, or jump into the Live Preview Studio with draggable split-screen & responsive viewports.
               </p>
             </div>
           </div>
-          <Button 
-            onClick={onOpenPlayground}
-            className="bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-mono text-xs uppercase px-5 py-2.5 gap-2 flex-shrink-0 shadow-md transition-all hover:scale-105"
-          >
-            <Sparkles className="w-4 h-4 text-amber-300" />
-            Open Playground Page
-          </Button>
+          <div className="flex flex-wrap items-center gap-2.5 flex-shrink-0">
+            {onOpenPreview && (
+              <Button
+                onClick={() => onOpenPreview()}
+                className="bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white font-mono text-xs uppercase px-4 py-2.5 gap-2 shadow-md transition-all hover:scale-105 cursor-pointer"
+              >
+                <Eye className="w-4 h-4 text-emerald-100" />
+                Live Preview Page
+              </Button>
+            )}
+            <Button 
+              onClick={onOpenPlayground}
+              className="bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-mono text-xs uppercase px-5 py-2.5 gap-2 shadow-md transition-all hover:scale-105 cursor-pointer"
+            >
+              <Sparkles className="w-4 h-4 text-amber-300" />
+              Open Playground Page
+            </Button>
+          </div>
         </div>
       )}
 
-      {/* 2. Interactive SVG Network Path Visualizer */}
-      <Card className="carbon-card relative overflow-hidden backdrop-blur-xl bg-card/75 shadow-lg">
-        <CardHeader className="pb-2 border-b border-border/30">
+      {/* Backdrop when Topology Card is Extended */}
+      {isTopologyExtended && (
+        <div
+          onClick={() => setIsTopologyExtended(false)}
+          className="fixed inset-0 z-40 bg-slate-950/75 backdrop-blur-md animate-in fade-in duration-300"
+        />
+      )}
+
+      {/* 2. Dynamic LLM Orchestrator & Worker Spawning Topology */}
+      <Card
+        className={cn(
+          "carbon-card overflow-visible backdrop-blur-xl bg-card/95 shadow-xl border-border/80 transition-all duration-500 ease-[cubic-bezier(0.16,1,0.3,1)]",
+          isTopologyExtended
+            ? "fixed inset-4 md:inset-8 z-50 overflow-y-auto ring-2 ring-primary/60 shadow-[0_0_80px_rgba(59,130,246,0.35)] animate-in zoom-in-95 fade-in duration-300"
+            : "relative"
+        )}
+      >
+        <CardHeader className="pb-3 border-b border-border/40 bg-secondary/30">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <CardTitle className="text-xl font-light tracking-wide flex items-center gap-2">
-              <Layers className="w-5 h-5 text-primary" />
-              LangGraph Multi-Agent Core Network
-            </CardTitle>
             <div className="flex items-center gap-3">
+              <div className="p-2 rounded-lg bg-primary/15 border border-primary/30 text-primary">
+                <Layers className="w-5 h-5" />
+              </div>
+              <div>
+                <CardTitle className="text-lg font-semibold tracking-tight flex flex-wrap items-center gap-2">
+                  Generic LLM Orchestrator & Dynamic Worker Spawning
+                  <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/30">
+                    LLM Router Active
+                  </span>
+                  <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded-full bg-purple-500/15 text-purple-700 dark:text-purple-300 border border-purple-500/30 flex items-center gap-1">
+                    <Move className="w-3 h-3" />
+                    Draggable Nodes
+                  </span>
+                </CardTitle>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  The central LLM dynamically inspects all registered worker personas & capabilities to spawn the optimal specialist. Drag any worker card to arrange your canvas!
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {Object.keys(workerOffsets).length > 0 && (
+                <button
+                  onClick={() => setWorkerOffsets({})}
+                  className="px-2.5 py-1 rounded-lg text-[11px] font-mono uppercase bg-amber-500/15 text-amber-600 dark:text-amber-300 border border-amber-500/40 hover:bg-amber-500/25 transition-all cursor-pointer flex items-center gap-1 animate-in fade-in duration-200"
+                  title="Snap all dragged worker cards back to grid"
+                >
+                  <RefreshCw className="w-3 h-3" />
+                  Reset Layout
+                </button>
+              )}
               <AnimationSelector variant="compact" />
-              <span className="font-mono text-xs uppercase text-muted-foreground bg-muted px-2 py-0.5 border hidden md:inline-block">
-                Model: Gemma-4 / Llama-3.2
+              <span className="font-mono text-[11px] text-primary bg-primary/10 px-2.5 py-1 rounded-md border border-primary/30 hidden md:inline-flex items-center gap-1.5">
+                <Cpu className="w-3.5 h-3.5" />
+                {orchestratorModelName}
               </span>
+              <button
+                onClick={() => setIsTopologyExtended((prev) => !prev)}
+                className={cn(
+                  "px-3 py-1.5 rounded-xl text-xs font-mono uppercase font-semibold border transition-all duration-300 flex items-center gap-1.5 cursor-pointer",
+                  isTopologyExtended
+                    ? "bg-gradient-to-r from-amber-500 to-orange-500 text-white border-amber-400 shadow-[0_0_20px_rgba(245,158,11,0.4)] scale-105"
+                    : "bg-primary/15 text-primary border-primary/40 hover:bg-primary hover:text-white hover:scale-105 hover:shadow-[0_0_20px_rgba(59,130,246,0.35)]"
+                )}
+                title={isTopologyExtended ? "Collapse Extended Topology View" : "Extend Topology Canvas with Smooth Animation"}
+              >
+                {isTopologyExtended ? (
+                  <>
+                    <Minimize2 className="w-3.5 h-3.5" />
+                    <span>Collapse</span>
+                  </>
+                ) : (
+                  <>
+                    <Maximize2 className="w-3.5 h-3.5" />
+                    <span>Extend</span>
+                  </>
+                )}
+              </button>
             </div>
           </div>
         </CardHeader>
-        <CardContent className="pt-8 pb-6">
-          <div className="flex flex-col md:flex-row items-center justify-around gap-8 relative">
-            
-            {/* CENTRAL MIND (ORCHESTRATOR) */}
-            <div 
+        <CardContent className="pt-6 pb-6 space-y-5">
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
+            {/* CENTRAL ORCHESTRATOR LLM ROUTER */}
+            <div
               className={cn(
-                "relative z-10 w-44 p-4 border flex flex-col items-center justify-center transition-all duration-500",
-                routingStep === 1 
-                  ? "border-primary bg-primary/10 shadow-glow shadow-primary/30 scale-105 siri-fluid-border-frame" 
-                  : "border-border bg-card"
+                "lg:col-span-4 p-5 rounded-xl border flex flex-col justify-between transition-all duration-500 relative overflow-hidden",
+                routingStep === 1
+                  ? "border-primary bg-primary/10 shadow-[0_0_30px_rgba(59,130,246,0.25)] siri-fluid-border-frame"
+                  : activeRoutingAgent
+                  ? "border-purple-500/50 bg-purple-500/5 dark:bg-purple-950/15"
+                  : "border-border/80 bg-secondary/30"
               )}
             >
-              <SiriFluidOrb 
-                size="lg" 
-                state={routingStep === 1 ? 'thinking' : 'active'}
-                className="mb-2"
-              >
-                <Cpu className={cn("w-8 h-8 text-white drop-shadow-md", routingStep === 1 && "animate-pulse")} />
-              </SiriFluidOrb>
-              <div className="font-bold text-center text-sm">Orchestrator Agent</div>
-              <div className="font-mono text-[9px] text-muted-foreground mt-1">MAIN COORDINATOR</div>
-              {routingStep === 1 && (
-                <span className="absolute -top-2 bg-primary text-white text-[8px] px-1 font-bold animate-bounce uppercase">
-                  Routing...
-                </span>
-              )}
-            </div>
-
-            {/* ROUTING PATHS (CONNECTIONS) */}
-            <div className="hidden md:block absolute inset-0 pointer-events-none z-0">
-              <svg className="w-full h-full animate-in fade-in duration-500" style={{ minHeight: '120px' }}>
-                {/* Path to Code Agent */}
-                <path 
-                  d="M 230,60 L 400,60" 
-                  fill="none" 
-                  stroke={activeRoutingAgent === 'code' ? 'hsl(var(--accent))' : 'hsl(var(--border))'} 
-                  strokeWidth={activeRoutingAgent === 'code' ? '3' : '1.5'} 
-                  className={cn(activeRoutingAgent === 'code' && "stroke-dasharray-anim animate-dash")}
-                />
-                
-                {/* Path to Research Agent */}
-                <path 
-                  d="M 230,60 L 580,25" 
-                  fill="none" 
-                  stroke={activeRoutingAgent === 'research' ? 'hsl(var(--accent))' : 'hsl(var(--border))'} 
-                  strokeWidth={activeRoutingAgent === 'research' ? '3' : '1.5'} 
-                  className={cn(activeRoutingAgent === 'research' && "stroke-dasharray-anim animate-dash")}
-                />
-
-                {/* Path to Analysis Agent */}
-                <path 
-                  d="M 230,60 L 580,95" 
-                  fill="none" 
-                  stroke={activeRoutingAgent === 'analysis' ? 'hsl(var(--accent))' : 'hsl(var(--border))'} 
-                  strokeWidth={activeRoutingAgent === 'analysis' ? '3' : '1.5'} 
-                  className={cn(activeRoutingAgent === 'analysis' && "stroke-dasharray-anim animate-dash")}
-                />
-              </svg>
-            </div>
-
-            {/* SPECIALIZED AGENTS SPLIT */}
-            <div className="flex flex-col gap-4 w-full md:w-auto">
-              
-              {/* CODE AGENT */}
-              <div 
-                className={cn(
-                  "relative z-10 w-full md:w-72 p-3 border flex items-center gap-3 transition-all duration-300",
-                  activeRoutingAgent === 'code'
-                    ? "border-accent bg-secondary/30 shadow-glow shadow-accent/20 translate-x-2"
-                    : "border-border bg-card"
-                )}
-              >
-                <div className={cn("p-2 border", activeRoutingAgent === 'code' ? "bg-accent/10 border-accent text-accent" : "bg-muted text-muted-foreground")}>
-                  <Binary className="w-5 h-5" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex justify-between items-center">
-                    <span className="font-bold text-xs">Code Agent</span>
-                    <span className="text-[9px] font-mono text-muted-foreground flex items-center gap-1 bg-muted px-1.5 py-0.2 border">
-                      <FolderOpen className="w-2.5 h-2.5" /> D:\...\website
+              <div className="flex items-center gap-4">
+                <SiriFluidOrb
+                  size="md"
+                  state={routingStep === 1 ? 'thinking' : isTyping ? 'active' : 'idle'}
+                >
+                  <Cpu className={cn("w-6 h-6 text-white drop-shadow-md", routingStep === 1 && "animate-spin")} />
+                </SiriFluidOrb>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-sm text-foreground">Orchestrator Router</span>
+                    <span
+                      className={cn(
+                        "text-[9px] font-mono uppercase px-1.5 py-0.5 rounded font-semibold",
+                        routingStep === 1
+                          ? "bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/40 animate-pulse"
+                          : isTyping
+                          ? "bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-500/40"
+                          : "bg-muted text-muted-foreground border border-border"
+                      )}
+                    >
+                      {routingStep === 1
+                        ? "Evaluating Catalog..."
+                        : isTyping
+                        ? "Worker Spawned"
+                        : "Standby"}
                     </span>
                   </div>
-                  <div className="text-[10px] text-muted-foreground truncate">Generates and creates files in website</div>
-                </div>
-              </div>
-
-              {/* RESEARCH AGENT */}
-              <div 
-                className={cn(
-                  "relative z-10 w-full md:w-72 p-3 border flex items-center gap-3 transition-all duration-300",
-                  activeRoutingAgent === 'research'
-                    ? "border-accent bg-secondary/30 shadow-glow shadow-accent/20 translate-x-2"
-                    : "border-border bg-card"
-                )}
-              >
-                <div className={cn("p-2 border", activeRoutingAgent === 'research' ? "bg-accent/10 border-accent text-accent" : "bg-muted text-muted-foreground")}>
-                  <Globe className="w-5 h-5" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex justify-between items-center">
-                    <span className="font-bold text-xs">Research Agent</span>
-                    <span className="text-[9px] font-mono text-accent bg-accent/10 px-1 border border-accent/20">WEB ACTIVE</span>
+                  <div className="font-mono text-[11px] text-primary mt-0.5 truncate">
+                    Decision Engine: {routingDecision?.decisionModel || orchestratorModelName}
                   </div>
-                  <div className="text-[10px] text-muted-foreground truncate">Searches web & synthesizes recommendations</div>
+                  <p className="text-[11px] text-muted-foreground mt-1 leading-relaxed">
+                    Analyzes user intent, context & workspace state to dynamically spawn the right worker agent.
+                  </p>
                 </div>
               </div>
 
-              {/* ANALYSIS AGENT */}
-              <div 
-                className={cn(
-                  "relative z-10 w-full md:w-72 p-3 border flex items-center gap-3 transition-all duration-300",
-                  activeRoutingAgent === 'analysis'
-                    ? "border-accent bg-secondary/30 shadow-glow shadow-accent/20 translate-x-2"
-                    : "border-border bg-card"
-                )}
-              >
-                <div className={cn("p-2 border", activeRoutingAgent === 'analysis' ? "bg-accent/10 border-accent text-accent" : "bg-muted text-muted-foreground")}>
-                  <FileText className="w-5 h-5" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex justify-between items-center">
-                    <span className="font-bold text-xs">Analysis Agent</span>
-                    <span className="text-[9px] font-mono text-muted-foreground bg-muted px-1.5 py-0.2 border">REVIEW</span>
+              {/* LIVE LLM ROUTING DECISION RATIONALE */}
+              <div className="mt-4 pt-3.5 border-t border-border/50">
+                {routingDecision ? (
+                  <div className="space-y-2 animate-in fade-in duration-300">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[10px] font-mono uppercase tracking-wider text-purple-700 dark:text-purple-300 font-semibold flex items-center gap-1.5">
+                        <Sparkles className="w-3 h-3 text-amber-500 dark:text-amber-400" />
+                        Spawned: {routingDecision.workerName}
+                      </span>
+                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30">
+                        {Math.round((routingDecision.confidence || 0.92) * 100)}% Match
+                      </span>
+                    </div>
+                    <p className="text-xs text-foreground/90 bg-background/80 p-2.5 rounded-lg border border-border/60 leading-relaxed">
+                      {routingDecision.reasoning}
+                    </p>
+                    {routingDecision.executionFocus && (
+                      <div className="text-[11px] text-muted-foreground font-mono flex items-center gap-1.5 truncate">
+                        <Zap className="w-3 h-3 text-amber-500 dark:text-amber-400 shrink-0" />
+                        <span className="truncate">Focus: {routingDecision.executionFocus}</span>
+                      </div>
+                    )}
                   </div>
-                  <div className="text-[10px] text-muted-foreground truncate">Audits quality, bugs & security gaps</div>
-                </div>
-              </div>
-
-              {/* BUSINESS AGENT */}
-              <div 
-                className={cn(
-                  "relative z-10 w-full md:w-72 p-3 border flex items-center gap-3 transition-all duration-300",
-                  activeRoutingAgent === 'business'
-                    ? "border-accent bg-secondary/30 shadow-glow shadow-accent/20 translate-x-2"
-                    : "border-border bg-card"
-                )}
-              >
-                <div className={cn("p-2 border", activeRoutingAgent === 'business' ? "bg-accent/10 border-accent text-accent" : "bg-muted text-muted-foreground")}>
-                  <TrendingUp className="w-5 h-5" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex justify-between items-center">
-                    <span className="font-bold text-xs">Business Agent</span>
-                    <span className="text-[9px] font-mono text-muted-foreground bg-muted px-1.5 py-0.2 border">CSV SHEET</span>
+                ) : (
+                  <div className="text-xs text-muted-foreground/90 flex items-center justify-between py-2 px-3 rounded-lg bg-background/60 border border-border/50">
+                    <span>Ready to evaluate {workerCatalog.length || 6} available workers</span>
+                    <span className="font-mono text-[10px] text-primary uppercase font-semibold">Auto-Spawn</span>
                   </div>
-                  <div className="text-[10px] text-muted-foreground truncate">Financial models & CSV spreadsheets</div>
-                </div>
+                )}
               </div>
+            </div>
 
+            {/* DYNAMIC WORKER POOL GRID (WITH FREE DRAGGING) */}
+            <div className="lg:col-span-8 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3 relative">
+              {(workerCatalog.length > 0
+                ? workerCatalog
+                : [
+                    { id: 'code', name: 'Code Generation Specialist', type: 'builtin', description: 'Creates full-stack apps, websites & scripts in workspace' },
+                    { id: 'analyze_and_fix', name: 'Diagnostics & Repair Specialist', type: 'builtin', description: 'Multi-file root-cause debugging, code repair & verification' },
+                    { id: 'research', name: 'Deep Research Specialist', type: 'builtin', description: 'Live web search, URL synthesis & competitive intelligence' },
+                    { id: 'analysis', name: 'Code Audit & Vision Specialist', type: 'builtin', description: 'Security audit, complexity metrics & UI vision inspection' },
+                    { id: 'business', name: 'Business & Financial Specialist', type: 'builtin', description: 'Double-entry ledger, ROI models, Excel & pitch decks' },
+                    { id: 'general', name: 'General Strategy Assistant', type: 'builtin', description: 'Direct conversational reasoning, brainstorming & Q&A' },
+                  ]
+              ).map((worker) => {
+                const isSpawned = activeRoutingAgent === worker.id || (routingDecision?.workerId === worker.id && isTyping);
+                const isLastSelected = !isTyping && routingDecision?.workerId === worker.id;
+                const offset = workerOffsets[worker.id] || { x: 0, y: 0 };
+                const isBeingDragged = draggingWorkerId === worker.id;
+                const IconComp =
+                  worker.id === 'code'
+                    ? Binary
+                    : worker.id === 'analyze_and_fix'
+                    ? Terminal
+                    : worker.id === 'research'
+                    ? Globe
+                    : worker.id === 'analysis'
+                    ? FileText
+                    : worker.id === 'business'
+                    ? TrendingUp
+                    : Bot;
+
+                return (
+                  <div
+                    key={worker.id}
+                    onMouseDown={(e) => {
+                      // Start smooth pointer dragging on the worker card
+                      if ((e.target as HTMLElement).closest('button')) return;
+                      dragWorkerRef.current = {
+                        id: worker.id,
+                        startX: e.clientX,
+                        startY: e.clientY,
+                        origX: offset.x,
+                        origY: offset.y,
+                      };
+                      setDraggingWorkerId(worker.id);
+                    }}
+                    onClick={() => {
+                      if (mode === 'direct' && ['code', 'research', 'analysis', 'business'].includes(worker.id)) {
+                        setSelectedDirectAgent(worker.id);
+                      }
+                    }}
+                    style={{
+                      transform: `translate3d(${offset.x}px, ${offset.y}px, 0) ${isBeingDragged ? 'scale(1.04)' : isSpawned ? 'scale(1.02)' : 'scale(1)'}`,
+                      transition: isBeingDragged ? 'none' : 'transform 0.35s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.3s ease',
+                      zIndex: isBeingDragged ? 40 : isSpawned ? 20 : 1,
+                    }}
+                    className={cn(
+                      "p-3.5 rounded-xl border flex flex-col justify-between relative group select-none",
+                      isBeingDragged
+                        ? "cursor-grabbing border-primary bg-card shadow-[0_20px_50px_rgba(59,130,246,0.35)] ring-2 ring-primary/60"
+                        : "cursor-grab",
+                      isSpawned
+                        ? "border-accent bg-accent/10 shadow-[0_0_25px_rgba(59,130,246,0.28)] ring-1 ring-accent/50"
+                        : isLastSelected
+                        ? "border-purple-500/50 bg-purple-500/5"
+                        : "border-border/70 bg-card/90 hover:border-primary/50 hover:bg-secondary/40"
+                    )}
+                  >
+                    <div>
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <div
+                            className={cn(
+                              "p-2 rounded-lg border shrink-0 transition-colors",
+                              isSpawned
+                                ? "bg-accent text-white border-accent shadow-sm"
+                                : isLastSelected
+                                ? "bg-purple-500/20 text-purple-700 dark:text-purple-300 border-purple-500/40"
+                                : "bg-secondary/60 text-muted-foreground border-border/60 group-hover:text-foreground"
+                            )}
+                          >
+                            <IconComp className="w-4 h-4" />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="font-semibold text-xs text-foreground truncate">{worker.name}</div>
+                            <div className="font-mono text-[10px] text-muted-foreground uppercase flex items-center gap-1.5">
+                              <span>ID: {worker.id}</span>
+                              {worker.type === 'custom' && (
+                                <span className="px-1 py-0.2 bg-amber-500/20 text-amber-700 dark:text-amber-300 rounded text-[8px]">CUSTOM</span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1 shrink-0">
+                          {isSpawned && (
+                            <span className="flex items-center gap-1 text-[9px] font-mono uppercase px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-500/40 shrink-0 animate-pulse">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 dark:bg-emerald-400 animate-ping" />
+                              Running
+                            </span>
+                          )}
+                          {!isSpawned && isLastSelected && (
+                            <span className="text-[9px] font-mono uppercase px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-700 dark:text-purple-300 border border-purple-500/30 shrink-0">
+                              Last Used
+                            </span>
+                          )}
+                          <GripVertical className="w-3.5 h-3.5 text-muted-foreground/40 group-hover:text-primary transition-colors" />
+                        </div>
+                      </div>
+
+                      <p className="text-[11px] text-muted-foreground mt-2.5 line-clamp-2 leading-relaxed">
+                        {worker.description}
+                      </p>
+                    </div>
+
+                    {isSpawned && activeTool && (
+                      <div className="mt-2.5 pt-2 border-t border-accent/30 flex items-center justify-between text-[10px] font-mono text-accent">
+                        <span className="truncate flex items-center gap-1">
+                          <Loader2 className="w-3 h-3 animate-spin shrink-0" />
+                          Tool: {activeTool}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
         </CardContent>
       </Card>
 
-      {/* 3. Main Playground / Chat Workspace */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 animate-in fade-in slide-in-from-bottom-2 duration-500">
-        
-        {/* PLAYGROUND LEFT PANEL (CONTROLS AND SUGGESTIONS) */}
-        <div className="space-y-6 lg:col-span-1">
-          {/* Mode Selector */}
-          <Card className="carbon-card">
-            <CardHeader className="pb-3 border-b border-border/30">
-              <CardTitle className="text-sm font-semibold tracking-wider font-mono text-muted-foreground uppercase">
-                Interaction Settings
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="pt-4 space-y-4">
-              <div className="flex gap-2">
-                <Button
-                  variant={mode === 'orchestrated' ? 'carbon' : 'outline'}
-                  onClick={() => setMode('orchestrated')}
-                  className="flex-1 text-xs"
-                >
-                  <Zap className="mr-1 w-3.5 h-3.5" />
-                  Orchestrated (Auto)
-                </Button>
-                <Button
-                  variant={mode === 'direct' ? 'carbon' : 'outline'}
-                  onClick={() => setMode('direct')}
-                  className="flex-1 text-xs"
-                >
-                  <Bot className="mr-1 w-3.5 h-3.5" />
-                  Direct Bypass
-                </Button>
-              </div>
-
-              {mode === 'direct' && (
-                <div className="space-y-2 animate-in slide-in-from-top-2 duration-300">
-                  <label className="font-mono text-[10px] uppercase text-muted-foreground">Select Target Agent:</label>
-                  <div className="grid grid-cols-4 gap-2">
-                    {['code', 'research', 'analysis', 'business'].map(a => (
-                      <Button
-                        key={a}
-                        variant={selectedDirectAgent === a ? 'carbon' : 'outline'}
-                        onClick={() => setSelectedDirectAgent(a)}
-                        className="text-[10px] uppercase h-8"
-                      >
-                        {a}
-                      </Button>
-                    ))}
-                  </div>
-                </div>
+      {/* 3. Quick Settings & Actions Bar */}
+      <div className="flex flex-wrap items-center justify-between gap-3 p-3.5 rounded-2xl bg-card/80 border border-border/70 backdrop-blur-sm shadow-sm animate-in fade-in duration-300">
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Mode Switcher */}
+          <div className="flex bg-secondary/60 p-1 rounded-xl border border-border/60">
+            <button
+              onClick={() => setMode('orchestrated')}
+              className={cn(
+                "px-3 py-1 rounded-lg text-xs font-mono uppercase font-semibold transition-all cursor-pointer flex items-center gap-1.5",
+                mode === 'orchestrated' ? "bg-purple-600 text-white shadow-sm" : "text-muted-foreground hover:text-foreground"
               )}
+            >
+              <Zap className="w-3.5 h-3.5" />
+              <span>Orchestrated (Auto)</span>
+            </button>
+            <button
+              onClick={() => setMode('direct')}
+              className={cn(
+                "px-3 py-1 rounded-lg text-xs font-mono uppercase font-semibold transition-all cursor-pointer flex items-center gap-1.5",
+                mode === 'direct' ? "bg-purple-600 text-white shadow-sm" : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              <Bot className="w-3.5 h-3.5" />
+              <span>Direct Bypass</span>
+            </button>
+          </div>
 
-              <div className="pt-4 border-t border-border/20 space-y-2">
-                <div className="flex items-center justify-between">
-                  <div className="space-y-0.5">
-                    <label className="font-mono text-xs uppercase font-bold text-foreground">Token Visualizer</label>
-                    <p className="text-[9px] text-muted-foreground leading-normal">Show exact tokens & counts live</p>
-                  </div>
-                  <Button
-                    variant={showExactTokens ? 'carbon' : 'outline'}
-                    onClick={() => setShowExactTokens(!showExactTokens)}
-                    className="h-8 text-[10px] font-mono px-3.5"
-                    size="sm"
-                  >
-                    {showExactTokens ? 'ON' : 'OFF'}
-                  </Button>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Quick Prompts suggestions */}
-          <Card className="carbon-card">
-            <CardHeader className="pb-3 border-b border-border/30">
-              <CardTitle className="text-sm font-semibold tracking-wider font-mono text-muted-foreground uppercase flex items-center gap-1.5">
-                <TrendingUp className="w-4 h-4 text-primary" />
-                Quick Action Tasks
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="pt-4 space-y-3">
-              <button 
-                onClick={() => handleQuickPrompt("Create a premium landing page HTML with complete CSS styled for a personal portfolio in my website folder")}
-                className="w-full text-left p-3 text-xs bg-muted/30 border border-border/30 hover:border-accent hover:bg-secondary/20 transition-all font-sans block"
-              >
-                <span className="font-bold text-accent block mb-1">💻 CODE SYSTEM</span>
-                "Create a personal portfolio website in D:\learning\code\website"
-              </button>
-              <button 
-                onClick={() => handleQuickPrompt("Research current UI design trends in 2026 and list core colors/typographies")}
-                className="w-full text-left p-3 text-xs bg-muted/30 border border-border/30 hover:border-accent hover:bg-secondary/20 transition-all font-sans block"
-              >
-                <span className="font-bold text-primary block mb-1">🔍 RESEARCH TRENDS</span>
-                "Research UI/UX design trends for 2026 and best practices"
-              </button>
-              <button 
-                onClick={() => handleQuickPrompt("Analyze this Python code for performance issues: def count(n):\n    res = []\n    for i in range(n):\n        res.append(i * 2)\n    return res")}
-                className="w-full text-left p-3 text-xs bg-muted/30 border border-border/30 hover:border-accent hover:bg-secondary/20 transition-all font-sans block"
-              >
-                <span className="font-bold text-muted-foreground block mb-1">⚙️ QUALITY REVIEW</span>
-                "Analyze Python code snippet for safety and performance"
-              </button>
-            </CardContent>
-          </Card>
+          {mode === 'direct' && (
+            <div className="flex items-center gap-1 bg-secondary/40 p-1 rounded-xl border border-border/50">
+              {['code', 'research', 'analysis', 'business'].map(a => (
+                <button
+                  key={a}
+                  onClick={() => setSelectedDirectAgent(a)}
+                  className={cn(
+                    "px-2.5 py-0.5 rounded-lg text-[10px] font-mono uppercase font-semibold transition-all cursor-pointer",
+                    selectedDirectAgent === a ? "bg-card text-foreground shadow-sm border border-border" : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  {a}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
-        {/* PLAYGROUND RIGHT PANEL (CHAT AND OUTPUTS) */}
-        <div className="lg:col-span-2 space-y-6">
-          <Card 
-            onDragOver={(e) => { e.preventDefault(); setIsDraggingFile(true); }}
-            onDragLeave={(e) => {
-              // Only disable if leaving the card boundary
-              if (e.currentTarget.contains(e.relatedTarget as Node)) return;
-              setIsDraggingFile(false);
-            }}
-            onDrop={handleFileDrop}
-            className={cn("carbon-card flex flex-col min-h-[780px] lg:min-h-[840px] relative transition-all duration-500 shadow-xl", (isTyping || isRecording) && "siri-fluid-border-frame shadow-[0_0_30px_rgba(168,85,247,0.35)]")}
+        {/* Quick Action Chips */}
+        <div className="flex items-center gap-1.5 overflow-x-auto py-1">
+          <span className="text-[10px] font-mono uppercase text-muted-foreground hidden sm:inline mr-1">Quick Tasks:</span>
+          <button
+            onClick={() => handleQuickPrompt("Create a premium landing page HTML with complete CSS styled for a personal portfolio in my website folder")}
+            className="px-2.5 py-1 rounded-lg bg-secondary/50 hover:bg-secondary text-[11px] font-medium text-purple-300 border border-purple-500/30 transition-all whitespace-nowrap cursor-pointer flex items-center gap-1"
           >
-            {/* Drag and Drop Glowing Backdrop Overlay */}
-            {isDraggingFile && (
-              <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-slate-950/85 backdrop-blur-md border-4 border-dashed border-purple-500/80 rounded-2xl animate-in fade-in duration-200 pointer-events-none">
-                <SiriFluidOrb size="lg" state="recording" showGlow={true} />
-                <h3 className="text-xl font-bold text-white mt-4 tracking-tight">Drop on the Orb to Ingest</h3>
-                <p className="text-sm text-purple-300 max-w-sm text-center mt-1">
-                  Drop receipt/invoice image to extract into Excel, or drop PDF, CSV, or code files for instant analysis.
-                </p>
-              </div>
-            )}
+            <span>💻</span>
+            <span>Portfolio Page</span>
+          </button>
+          <button
+            onClick={() => handleQuickPrompt("Research current UI design trends in 2026 and list core colors/typographies")}
+            className="px-2.5 py-1 rounded-lg bg-secondary/50 hover:bg-secondary text-[11px] font-medium text-blue-300 border border-blue-500/30 transition-all whitespace-nowrap cursor-pointer flex items-center gap-1"
+          >
+            <span>🔍</span>
+            <span>UI Trends 2026</span>
+          </button>
+          <button
+            onClick={() => handleQuickPrompt("Remember that I prefer TypeScript, TailwindCSS, and dark mode for all apps")}
+            className="px-2.5 py-1 rounded-lg bg-secondary/50 hover:bg-secondary text-[11px] font-medium text-emerald-300 border border-emerald-500/30 transition-all whitespace-nowrap cursor-pointer flex items-center gap-1"
+          >
+            <span>🧠</span>
+            <span>Test Memory</span>
+          </button>
+        </div>
 
-            <CardHeader className="pb-4 border-b border-border/30 flex flex-col xl:flex-row items-start xl:items-center justify-between gap-4">
+        {/* Token Visualizer Toggle */}
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] font-mono text-muted-foreground hidden md:inline">Tokens:</span>
+          <button
+            onClick={() => setShowExactTokens(!showExactTokens)}
+            className={cn(
+              "px-2.5 py-1 rounded-lg text-[10px] font-mono uppercase font-semibold border transition-all cursor-pointer",
+              showExactTokens ? "bg-primary text-white border-primary" : "bg-secondary text-muted-foreground border-border/60 hover:text-foreground"
+            )}
+          >
+            {showExactTokens ? 'Tokens ON' : 'Tokens OFF'}
+          </button>
+        </div>
+      </div>
+
+      {/* 4. Antigravity 2.0 / ChatGPT Codex Dual-Pane Split Canvas */}
+      <div 
+        onDragOver={(e) => { e.preventDefault(); setIsDraggingFile(true); }}
+        onDragLeave={(e) => {
+          if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+          setIsDraggingFile(false);
+        }}
+        onDrop={handleFileDrop}
+        className={cn(
+          "flex flex-col lg:flex-row h-full min-h-[820px] lg:min-h-[860px] rounded-2xl border border-border/80 shadow-2xl bg-card overflow-hidden relative transition-all duration-300",
+          isPlaygroundExtended && "fixed inset-3 md:inset-6 z-50 min-h-0 h-[calc(100vh-1.5rem)] md:h-[calc(100vh-3rem)] ring-2 ring-purple-500/60 shadow-[0_0_90px_rgba(168,85,247,0.4)]",
+          (isTyping || isRecording) && "siri-fluid-border-frame shadow-[0_0_30px_rgba(168,85,247,0.35)]"
+        )}
+      >
+        {/* Drag and Drop Glowing Backdrop Overlay */}
+        {isDraggingFile && (
+          <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-slate-950/85 backdrop-blur-md border-4 border-dashed border-purple-500/80 rounded-2xl animate-in fade-in duration-200 pointer-events-none">
+            <SiriFluidOrb size="lg" state="recording" showGlow={true} />
+            <h3 className="text-xl font-bold text-white mt-4 tracking-tight">Drop on the Orb to Ingest</h3>
+            <p className="text-sm text-purple-300 max-w-sm text-center mt-1">
+              Drop receipt/invoice image to extract into Excel, or drop PDF, CSV, or code files for instant analysis.
+            </p>
+          </div>
+        )}
+
+        {/* LEFT PANE: Conversation & Input */}
+        {!isCanvasExpanded && (
+          <div 
+            style={{ width: isCanvasOpen ? `${splitRatio}%` : '100%' }}
+            className={cn(
+              "flex flex-col h-full overflow-hidden transition-[width] duration-150 flex-1",
+              !isCanvasOpen && "max-w-4xl mx-auto w-full"
+            )}
+          >
+<CardHeader className="pb-4 border-b border-border/30 flex flex-col xl:flex-row items-start xl:items-center justify-between gap-4">
               <div>
-                <CardTitle className="text-xl sm:text-2xl font-light tracking-tight whitespace-nowrap">Interactive Hub Playground</CardTitle>
+                <CardTitle className="text-xl sm:text-2xl font-light tracking-tight whitespace-nowrap flex items-center gap-2.5">
+                  Interactive Hub Playground
+                  {isPlaygroundExtended && (
+                    <span className="text-[10px] font-mono uppercase px-2.5 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/40 animate-pulse">
+                      Extended Cinema Mode
+                    </span>
+                  )}
+                </CardTitle>
                 <p className="text-xs text-muted-foreground mt-1 font-mono">
                   {mode === 'orchestrated' 
                     ? "Coordinated by Main Orchestrator Agent via LangGraph" 
                     : `Direct communication with ${selectedDirectAgent.toUpperCase()} Agent`}
                 </p>
               </div>
-              <div className="flex flex-wrap items-center gap-3 w-full xl:w-auto justify-start xl:justify-end">
+              <div className="flex flex-wrap items-center gap-2.5 w-full xl:w-auto justify-start xl:justify-end">
+                {onOpenPreview && (
+                  <Button
+                    variant="outline"
+                    onClick={() => onOpenPreview()}
+                    className="h-10 sm:h-11 font-mono text-xs uppercase gap-1.5 px-3 border-emerald-500/50 text-emerald-700 dark:text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 transition-all cursor-pointer"
+                    title="Open Live App & Code Preview Studio"
+                  >
+                    <Eye className="w-4 h-4 text-emerald-500" />
+                    <span className="hidden sm:inline">Preview Studio</span>
+                  </Button>
+                )}
+
+                <button
+                  onClick={() => setIsPlaygroundExtended((prev) => !prev)}
+                  className={cn(
+                    "h-10 sm:h-11 px-3.5 rounded-xl font-mono text-xs uppercase font-semibold border transition-all duration-300 flex items-center gap-1.5 cursor-pointer",
+                    isPlaygroundExtended
+                      ? "bg-gradient-to-r from-amber-500 to-orange-500 text-white border-amber-400 shadow-[0_0_20px_rgba(245,158,11,0.4)] scale-105"
+                      : "border-primary/50 text-primary bg-primary/10 hover:bg-primary hover:text-white hover:scale-105 hover:shadow-[0_0_20px_rgba(59,130,246,0.3)]"
+                  )}
+                  title={isPlaygroundExtended ? "Collapse Extended Chat View" : "Extend Chat Workspace with Smooth Animation"}
+                >
+                  {isPlaygroundExtended ? (
+                    <>
+                      <Minimize2 className="w-3.5 h-3.5" />
+                      <span>Collapse</span>
+                    </>
+                  ) : (
+                    <>
+                      <Maximize2 className="w-3.5 h-3.5" />
+                      <span>Extend</span>
+                    </>
+                  )}
+                </button>
+
                 {activePlanContent && (
                   <Button
                     variant="outline"
@@ -1888,15 +2296,42 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
                   </Button>
                 )}
 
+                {/* Dual-Pane Interactive Canvas Toggle Button */}
+                <Button
+                  variant={isCanvasOpen ? "carbon" : "outline"}
+                  onClick={() => {
+                    setIsCanvasOpen(prev => !prev);
+                    if (isCanvasExpanded) setIsCanvasExpanded(false);
+                  }}
+                  className={cn(
+                    "h-10 sm:h-11 font-mono text-xs sm:text-sm uppercase gap-2 px-3.5 font-semibold shadow-sm transition-all relative border",
+                    isCanvasOpen
+                      ? "border-purple-500 bg-purple-600 text-white shadow-md shadow-purple-500/20"
+                      : "border-purple-500/60 text-purple-700 dark:text-purple-300 bg-purple-500/10 hover:bg-purple-500/20"
+                  )}
+                  title={isCanvasOpen ? "Collapse Interactive Canvas" : "Open Dual-Pane Interactive Canvas"}
+                >
+                  <Sparkles className="w-4 h-4 text-purple-400" />
+                  <span className="hidden sm:inline">Canvas</span>
+                  {activePreviewHtml && (
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                  )}
+                </Button>
+
                 {/* Personal Knowledge Journal Button */}
                 <Button
                   variant="outline"
                   onClick={() => setIsJournalOpen(true)}
-                  className="h-10 sm:h-11 font-mono text-xs sm:text-sm uppercase gap-2 border-purple-500/60 text-purple-300 bg-purple-500/10 hover:bg-purple-500/20 px-3 font-semibold shadow-md transition-all"
+                  className="h-10 sm:h-11 font-mono text-xs sm:text-sm uppercase gap-2 border-purple-500/60 text-purple-700 dark:text-purple-300 bg-purple-500/10 hover:bg-purple-500/20 px-3 font-semibold shadow-sm transition-all relative"
                   title="Open Personal Knowledge Journal"
                 >
-                  <Brain className="w-4 h-4 text-purple-400" />
-                  <span className="hidden sm:inline">Journal</span>
+                  <Brain className="w-4 h-4 text-purple-600 dark:text-purple-400" />
+                  <span className="hidden sm:inline">Agent Memory</span>
+                  {memoryCount > 0 && (
+                    <span className="px-1.5 py-0.2 text-[10px] font-bold bg-purple-600 text-white rounded-full">
+                      {memoryCount}
+                    </span>
+                  )}
                 </Button>
 
                 {/* Voice Read Aloud Toggle */}
@@ -1905,30 +2340,53 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
                   onClick={() => {
                     const nextVal = !autoSpeakResponses;
                     setAutoSpeakResponses(nextVal);
-                    if (typeof window !== 'undefined') {
-                      localStorage.setItem('senior_agent_auto_speak', String(nextVal));
-                      if (!nextVal) stopSpeaking();
-                    }
+                    naturalVoice.saveSettings({ autoSpeak: nextVal });
+                    if (!nextVal) stopSpeaking();
                   }}
                   className={cn(
                     "h-10 sm:h-11 font-mono text-xs uppercase gap-1.5 px-3 border transition-all",
                     autoSpeakResponses 
-                      ? "border-amber-500/60 text-amber-300 bg-amber-500/15 shadow-[0_0_10px_rgba(245,158,11,0.2)]" 
+                      ? "border-amber-500/60 text-amber-700 dark:text-amber-300 bg-amber-500/15 shadow-[0_0_10px_rgba(245,158,11,0.15)]" 
                       : "border-border text-muted-foreground hover:text-foreground"
                   )}
                   title={autoSpeakResponses ? "Voice responses enabled (Click to mute)" : "Click to enable auto-spoken voice responses"}
                 >
-                  {autoSpeakResponses ? <Volume2 className="w-4 h-4 text-amber-400" /> : <VolumeX className="w-4 h-4" />}
+                  {autoSpeakResponses ? <Volume2 className="w-4 h-4 text-amber-600 dark:text-amber-400" /> : <VolumeX className="w-4 h-4" />}
                   <span className="hidden md:inline">{autoSpeakResponses ? 'Voice On' : 'Mute'}</span>
                 </Button>
+
+                {/* Voice Settings & Selection Button */}
+                <Button
+                  variant="outline"
+                  onClick={() => setIsVoiceModalOpen(true)}
+                  className="h-10 sm:h-11 font-mono text-xs uppercase gap-1.5 px-3 border border-amber-500/40 hover:border-amber-400 text-amber-700 dark:text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 transition-all shadow-sm"
+                  title="Natural Voice Settings, Voice Selection & Cadence Tuning"
+                >
+                  <Sliders className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                  <span className="hidden lg:inline max-w-[120px] truncate font-medium">
+                    {activeVoiceLabel || 'Voice'}
+                  </span>
+                </Button>
+
+                {/* Live Speaking Indicator (if currently speaking) */}
+                {currentlySpeakingIdx !== null && (
+                  <button
+                    onClick={stopSpeaking}
+                    className="h-10 sm:h-11 px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center gap-1.5 animate-pulse shadow-md transition-all cursor-pointer"
+                    title="Speaking response... Click to stop speaking"
+                  >
+                    <Square className="w-3 h-3 fill-current" />
+                    <span className="text-[10px] uppercase font-mono tracking-wider">Stop</span>
+                  </button>
+                )}
 
                 <Button
                   variant="outline"
                   onClick={() => setIsCloudModalOpen(true)}
-                  className="h-10 sm:h-11 font-mono text-xs sm:text-sm uppercase gap-2 border-emerald-500/60 text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20 px-4 font-bold shadow-md transition-all animate-in fade-in duration-200"
+                  className="h-10 sm:h-11 font-mono text-xs sm:text-sm uppercase gap-2 border-emerald-500/60 text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20 px-4 font-bold shadow-sm transition-all animate-in fade-in duration-200"
                 >
-                  <Globe className="w-4 h-4 sm:w-5 sm:h-5 text-emerald-400" />
-                  <span className="hidden sm:inline">Provider: <strong className="text-emerald-300 font-black">{cloudProvider.toUpperCase()}</strong> <span className="text-emerald-400/90 font-normal">({selectedCloudModel})</span></span>
+                  <Globe className="w-4 h-4 sm:w-5 sm:h-5 text-emerald-600 dark:text-emerald-400" />
+                  <span className="hidden sm:inline">Provider: <strong className="text-emerald-800 dark:text-emerald-300 font-black">{cloudProvider.toUpperCase()}</strong> <span className="text-emerald-700/90 dark:text-emerald-400/90 font-normal">({selectedCloudModel})</span></span>
                   <span className="sm:hidden">{cloudProvider.toUpperCase()}</span>
                 </Button>
                 <ThinkingLevelSelector variant="dropdown" value={thinkingLevel} onChange={setThinkingLevel} />
@@ -1955,7 +2413,7 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
                       🧠
                     </div>
                     <div>
-                      <strong className="text-purple-300 font-semibold block">Saved to Knowledge Journal!</strong>
+                      <strong className="text-purple-300 font-semibold block">🧠 Saved to Agent Memory!</strong>
                       <span className="text-slate-200 italic">"{savedMemoryToast.content}"</span>
                     </div>
                   </div>
@@ -1963,7 +2421,7 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
                     onClick={() => setIsJournalOpen(true)}
                     className="px-3 py-1.5 bg-purple-600/40 hover:bg-purple-600 text-purple-200 hover:text-white text-xs font-medium rounded-lg border border-purple-400/40 transition-colors whitespace-nowrap shadow"
                   >
-                    Open Journal
+                    View Memory
                   </button>
                 </div>
               )}
@@ -1994,15 +2452,26 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
                         {isUser ? (
                           <span>User Request</span>
                         ) : (
-                          <>
+                          <div className="flex flex-wrap items-center gap-1.5">
                             <Bot className="w-3.5 h-3.5 text-primary" />
-                            <span>System Mind</span>
+                            <span>Orchestrator</span>
                             {msg.agentUsed && (
-                              <span className="font-bold text-accent bg-secondary/50 border border-accent/20 px-1.5 py-0.2 text-[9px] uppercase">
-                                {msg.agentUsed} Agent
+                              <span className="font-bold text-accent bg-accent/10 border border-accent/30 px-2 py-0.5 rounded text-[9px] uppercase flex items-center gap-1">
+                                <Zap className="w-2.5 h-2.5" />
+                                Spawned: {msg.workerName || `${msg.agentUsed} Agent`}
                               </span>
                             )}
-                          </>
+                            {msg.routingConfidence && (
+                              <span className="text-[9px] font-mono bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 px-1.5 py-0.5 rounded">
+                                {Math.round(msg.routingConfidence * 100)}% Match
+                              </span>
+                            )}
+                            {msg.routingReason && (
+                              <span className="text-[10px] font-sans normal-case tracking-normal text-muted-foreground/90 bg-secondary/40 px-2 py-0.5 rounded border border-border/50 max-w-md truncate" title={msg.routingReason}>
+                                {msg.routingReason}
+                              </span>
+                            )}
+                          </div>
                         )}
                       </div>
                       <div className="flex items-center gap-1">
@@ -2177,6 +2646,48 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
                           <span>Prompt: <strong className="text-foreground">{msg.prompt_tokens}</strong> tokens</span>
                           <span>Completion: <strong className="text-foreground">{msg.completion_tokens}</strong> tokens</span>
                           <span>Total: <strong className="text-ibm-blue">{msg.total_tokens}</strong> tokens</span>
+                        </div>
+                      )}
+
+                      {/* Personal Knowledge Journal: Saved Memories Pill */}
+                      {!isUser && msg.memoriesSaved && msg.memoriesSaved.length > 0 && (
+                        <div className="mt-3 p-3 bg-gradient-to-r from-purple-950/60 to-slate-900/80 border border-purple-500/50 rounded-xl flex items-center justify-between gap-3 text-xs shadow-md shadow-purple-500/10 animate-in fade-in duration-200">
+                          <div className="flex items-center gap-2.5 text-purple-200 min-w-0">
+                            <span className="text-base select-none shrink-0">🧠</span>
+                            <div className="min-w-0">
+                              <span className="font-semibold text-purple-300">🧠 Saved to Agent Memory:</span>{' '}
+                              <span className="italic text-purple-100 font-sans break-words">
+                                "{msg.memoriesSaved.map(m => m.content).join('", "')}"
+                              </span>
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => setIsJournalOpen(true)}
+                            className="px-2.5 py-1 text-[11px] font-semibold bg-purple-600/50 hover:bg-purple-600 text-purple-100 rounded-lg border border-purple-400/40 transition-colors whitespace-nowrap shadow shrink-0"
+                          >
+                            Open Journal
+                          </button>
+                        </div>
+                      )}
+
+                      {/* Personal Knowledge Journal: Recalled Context Pill */}
+                      {!isUser && msg.memoriesRecalled && msg.memoriesRecalled.length > 0 && (
+                        <div className="mt-3 p-3 bg-gradient-to-r from-indigo-950/60 to-slate-900/80 border border-indigo-500/50 rounded-xl flex items-center justify-between gap-3 text-xs shadow-md shadow-indigo-500/10 animate-in fade-in duration-200">
+                          <div className="flex items-center gap-2.5 text-indigo-200 min-w-0">
+                            <span className="text-base select-none shrink-0">💡</span>
+                            <div className="min-w-0">
+                              <span className="font-semibold text-indigo-300">Recalled Personal Preferences:</span>{' '}
+                              <span className="italic text-indigo-100 font-sans break-words">
+                                "{msg.memoriesRecalled.map(m => m.content).join('", "')}"
+                              </span>
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => setIsJournalOpen(true)}
+                            className="px-2.5 py-1 text-[11px] font-semibold bg-indigo-600/50 hover:bg-indigo-600 text-indigo-100 rounded-lg border border-indigo-400/40 transition-colors whitespace-nowrap shadow shrink-0"
+                          >
+                            Manage
+                          </button>
                         </div>
                       )}
 
@@ -2649,9 +3160,41 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
                 </span>
               </div>
             </div>
+          </div>
+        )}
 
-          </Card>
-        </div>
+        {/* DRAGGABLE RESIZE DIVIDER */}
+        {isCanvasOpen && !isCanvasExpanded && (
+          <SplitPaneDivider 
+            onResize={setSplitRatio}
+            onReset={() => setSplitRatio(50)}
+          />
+        )}
+
+        {/* RIGHT PANE: Interactive Canvas */}
+        {isCanvasOpen && (
+          <div 
+            style={{ width: isCanvasExpanded ? '100%' : `${100 - splitRatio}%` }}
+            className="h-full overflow-hidden transition-[width] duration-150 flex-1"
+          >
+            <AgentCanvasRightPane
+              activeTab={canvasActiveTab}
+              onTabChange={setCanvasActiveTab}
+              onClose={() => { setIsCanvasOpen(false); setIsCanvasExpanded(false); }}
+              isExpanded={isCanvasExpanded}
+              onToggleExpand={() => setIsCanvasExpanded(prev => !prev)}
+              previewHtml={activePreviewHtml}
+              codeSnippet={activeCodeSnippet}
+              codeFilename={activeCodeFilename}
+              todoItems={todoItems}
+              onToggleTodoItem={handleToggleTodoItem}
+              toolsExecuted={activeToolsHistory}
+              memoriesRecalled={lastAssistantMessage?.memoriesRecalled || []}
+              memoriesSaved={lastAssistantMessage?.memoriesSaved || []}
+              onOpenMemoryVault={() => setIsJournalOpen(true)}
+            />
+          </div>
+        )}
       </div>
 
       {/* Implementation Plan Overlay Modal Window */}
@@ -2934,7 +3477,14 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground }
       {/* Personal Knowledge Journal Modal */}
       <PersonalJournalModal 
         isOpen={isJournalOpen} 
-        onClose={() => setIsJournalOpen(false)} 
+        onClose={() => setIsJournalOpen(false)}
+        onMemoryUpdated={refreshMemoryCount}
+      />
+
+      {/* Natural Voice Intelligence Settings Modal */}
+      <VoiceSettingsModal
+        isOpen={isVoiceModalOpen}
+        onClose={() => setIsVoiceModalOpen(false)}
       />
     </div>
   );

@@ -13,14 +13,23 @@ from fastapi import APIRouter, HTTPException, Depends, File, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 import json
-import speech_recognition as sr
+try:
+    import speech_recognition as sr
+except ImportError:
+    sr = None
 
 from database.db import get_db, SessionLocal
 from database.models import HubModel, AgentModel, McpServerModel, WorkflowModel, ChatMessageModel, PerformanceLogModel, ScheduledTaskModel, HubWorkspaceModel, AgentTaskModel, HubMemoryModel, HubArtifactModel, AgentRunModel
 from sqlalchemy import select, delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .orchestrator import OrchestratorAgent
+from .orchestrator import (
+    OrchestratorAgent,
+    get_active_agent_runs,
+    register_agent_run,
+    update_agent_run,
+    complete_agent_run,
+)
 from .specialized_agents import create_specialized_agent, SPECIALIZED_AGENTS
 from .config import DEFAULT_MAIN_MODEL, DEFAULT_CODE_MODEL
 
@@ -58,6 +67,12 @@ class PersonalMemoryCreate(BaseModel):
     category: str = "preference"
     title: str = ""
     tags: List[str] = []
+
+class PersonalMemoryUpdate(BaseModel):
+    content: Optional[str] = None
+    category: Optional[str] = None
+    title: Optional[str] = None
+    tags: Optional[List[str]] = None
 
 class PersonalMemorySearch(BaseModel):
     query: str
@@ -184,17 +199,30 @@ def create_multi_agent_router(
     
     @router.get("/agents/available")
     async def get_available_agents():
-        """Get list of available specialized agents"""
+        """Get list of available specialized and custom worker agents"""
         try:
             agents = orchestrator.get_available_agents()
             return {
                 "status": "success",
                 "agents": agents,
-                "count": len(agents)
+                "count": len(agents),
+                "orchestrator_model": orchestrator.model_name
             }
         except Exception as e:
             import traceback
             traceback.print_exc()
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.get("/agents/running")
+    async def get_running_agents():
+        """Get real-time active and recently completed agent executions across all sessions"""
+        try:
+            snapshot = get_active_agent_runs()
+            return {
+                "status": "success",
+                **snapshot
+            }
+        except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
     
     @router.post("/agents/voice/transcribe")
@@ -251,11 +279,14 @@ def create_multi_agent_router(
         """Add a memory to Knowledge Journal with real-time UI notification."""
         try:
             from .personal_memory import personal_memory
+            tags = list(req.tags or [])
+            if not any(t in tags for t in ["agent_auto_extracted", "agent_tool", "user_manual"]):
+                tags.append("user_manual")
             mem = personal_memory.save_memory(
                 content=req.content,
                 category=req.category,
                 title=req.title,
-                tags=req.tags,
+                tags=tags,
                 broadcast=True
             )
             return {"status": "success", "memory": mem}
@@ -279,6 +310,26 @@ def create_multi_agent_router(
             from .personal_memory import personal_memory
             deleted = personal_memory.delete_memory(memory_id)
             return {"status": "success", "deleted": deleted}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.put("/memory/{memory_id}")
+    async def update_personal_memory(memory_id: int, req: PersonalMemoryUpdate):
+        """Update an existing memory in Knowledge Journal."""
+        try:
+            from .personal_memory import personal_memory
+            updated = personal_memory.update_memory(
+                memory_id=memory_id,
+                content=req.content,
+                category=req.category,
+                title=req.title,
+                tags=req.tags
+            )
+            if not updated:
+                raise HTTPException(status_code=404, detail="Memory not found")
+            return {"status": "success", "memory": updated}
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
@@ -345,6 +396,7 @@ def create_multi_agent_router(
         Interact directly with a specific specialized agent
         Bypasses the orchestrator
         """
+        run_id = f"direct_{agent_type}_{int(time.time() * 1000)}"
         try:
             # Validate agent type
             if agent_type not in SPECIALIZED_AGENTS:
@@ -360,6 +412,22 @@ def create_multi_agent_router(
                 raise HTTPException(status_code=500, detail="Failed to create agent")
             
             session_id = request.session_id or "default"
+            register_agent_run(
+                run_id=run_id,
+                session_id=session_id,
+                prompt=request.task,
+                source="direct-agent",
+                model=agent_model
+            )
+            update_agent_run(
+                run_id,
+                selected_agent=agent_type,
+                worker_name=agent.name,
+                routing_reason=f"Direct invocation of {agent.name}",
+                confidence=1.0,
+                step="executing"
+            )
+
             from .memory import multi_agent_memory
             from langchain_core.messages import HumanMessage, AIMessage
             
@@ -372,19 +440,24 @@ def create_multi_agent_router(
             multi_agent_memory.add_message(session_id, HumanMessage(content=request.task))
             multi_agent_memory.add_message(session_id, AIMessage(content=result))
             
+            complete_agent_run(run_id, status="completed")
+
             return {
                 "status": "success",
                 "response": result,
                 "agent_used": agent_type,
                 "metadata": {
                     "agent_name": agent.name,
-                    "model": model_name
+                    "model": model_name,
+                    "run_id": run_id
                 }
             }
             
         except HTTPException:
+            complete_agent_run(run_id, status="error", error="HTTPException")
             raise
         except Exception as e:
+            complete_agent_run(run_id, status="error", error=str(e))
             raise HTTPException(status_code=500, detail=str(e))
     
     @router.post("/agents/code/generate-app")

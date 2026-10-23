@@ -43,8 +43,8 @@ export const MultiAgentConfig: React.FC = () => {
     },
     allowed_paths: [],
     allowed_commands: [],
-    default_main_model: 'granite4.1:8b',
-    default_code_model: 'granite4.1:8b'
+    default_main_model: 'gemma4:31b-cloud',
+    default_code_model: 'gemma4:31b-cloud'
   });
   
   const [allTools, setAllTools] = useState<AgentTools>({
@@ -77,8 +77,8 @@ export const MultiAgentConfig: React.FC = () => {
         const fetchedConfig = {
           ...configResponse.config,
           allowed_commands: configResponse.config.allowed_commands || [],
-          default_main_model: configResponse.config.default_main_model || 'granite4.1:8b',
-          default_code_model: configResponse.config.default_code_model || 'granite4.1:8b'
+          default_main_model: configResponse.config.default_main_model || 'gemma4:31b-cloud',
+          default_code_model: configResponse.config.default_code_model || 'gemma4:31b-cloud'
         };
         setConfig(fetchedConfig);
         if (configResponse.all_tools) {
@@ -421,7 +421,7 @@ export const MultiAgentConfig: React.FC = () => {
                   type="text"
                   value={config.default_main_model || ''}
                   onChange={(e) => setConfig(prev => ({ ...prev, default_main_model: e.target.value }))}
-                  placeholder="e.g. granite4.1:8b"
+                  placeholder="e.g. gemma4:31b-cloud"
                   className="w-full bg-background text-foreground border border-border px-3 py-2 text-sm font-mono focus:outline-none focus:border-ibm-blue transition-colors"
                 />
               </div>
@@ -435,7 +435,7 @@ export const MultiAgentConfig: React.FC = () => {
                   type="text"
                   value={config.default_code_model || ''}
                   onChange={(e) => setConfig(prev => ({ ...prev, default_code_model: e.target.value }))}
-                  placeholder="e.g. granite4.1:8b"
+                  placeholder="e.g. gemma4:31b-cloud"
                   className="w-full bg-background text-foreground border border-border px-3 py-2 text-sm font-mono focus:outline-none focus:border-ibm-blue transition-colors"
                 />
               </div>

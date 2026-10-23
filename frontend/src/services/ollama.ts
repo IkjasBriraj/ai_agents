@@ -73,6 +73,36 @@ export const OllamaService = {
     return response.data;
   },
 
+  async getRunningAgents(): Promise<{
+    status: string;
+    active: Array<{
+      run_id: string;
+      session_id: string;
+      source: string;
+      prompt: string;
+      status: string;
+      selected_agent: string | null;
+      worker_name: string | null;
+      routing_reason: string;
+      confidence: number;
+      active_tool: string | null;
+      model: string;
+      step: string;
+      started_at: number;
+      updated_at: number;
+      elapsed_seconds: number;
+    }>;
+    recent: Array<any>;
+    active_count: number;
+  }> {
+    try {
+      const response = await axios.get(`${API_BASE}/api/multi-agent/agents/running`, { timeout: 6000 });
+      return response.data;
+    } catch {
+      return { status: 'error', active: [], recent: [], active_count: 0 };
+    }
+  },
+
   async testSingleAgent(payload: {
     agent_id: string;
     provider: string;
@@ -102,7 +132,19 @@ export const OllamaService = {
 
   async chatMultiAgentStream(
     prompt: string,
-    onEvent: (event: { type: string; agent?: string; content?: string; done: boolean }) => void,
+    onEvent: (event: {
+      type: string;
+      agent?: string;
+      worker_name?: string;
+      routing_reason?: string;
+      confidence?: number;
+      execution_focus?: string;
+      decision_model?: string;
+      run_id?: string;
+      content?: string;
+      done: boolean;
+      [key: string]: any;
+    }) => void,
     onError: (err: any) => void,
     context?: any,
     thinkingLevel?: string,
@@ -628,6 +670,11 @@ export const OllamaService = {
 
   async deletePersonalMemory(memoryId: number): Promise<any> {
     const response = await axios.delete(`${API_BASE}/api/multi-agent/memory/${memoryId}`);
+    return response.data;
+  },
+
+  async updatePersonalMemory(memoryId: number, data: { content?: string; category?: string; title?: string; tags?: string[] }): Promise<any> {
+    const response = await axios.put(`${API_BASE}/api/multi-agent/memory/${memoryId}`, data);
     return response.data;
   }
 };

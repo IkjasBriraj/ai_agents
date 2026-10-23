@@ -34,12 +34,14 @@ os.makedirs(IMAGE_OUTPUT_DIR, exist_ok=True)
 
 # Safety settings
 ALLOWED_EXTENSIONS = [
-    '.py', '.js', '.ts', '.jsx', '.tsx', '.mjs', '.cjs', '.html', '.css', '.scss', '.pcss',
-    '.json', '.yaml', '.yml', '.md', '.txt', '.env', '.gitignore', '.lock',
-    '.sql', '.sh', '.bat', '.ps1', '.xml', '.toml', '.ini',
-    '.vue', '.svelte', '.php', '.java', '.c', '.cpp', '.h',
-    '.go', '.rs', '.rb', '.swift', '.kt', '.dart', '.csv',
-    '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg',
+    '.py', '.pyi', '.js', '.ts', '.jsx', '.tsx', '.mjs', '.cjs', '.html', '.htm', '.css', '.scss', '.sass', '.less', '.pcss',
+    '.json', '.jsonc', '.yaml', '.yml', '.md', '.mdx', '.txt', '.env', '.gitignore', '.dockerignore', '.lock',
+    '.sql', '.sh', '.bash', '.zsh', '.bat', '.ps1', '.xml', '.toml', '.ini', '.cfg', '.conf', '.properties',
+    '.vue', '.svelte', '.astro', '.php', '.java', '.c', '.cpp', '.cc', '.cxx', '.h', '.hpp', '.cs', '.fs',
+    '.go', '.rs', '.rb', '.swift', '.kt', '.kts', '.scala', '.dart', '.r', '.lua', '.pl', '.ex', '.exs',
+    '.erl', '.hs', '.clj', '.Zig', '.zig', '.nim', '.v', '.sol', '.prisma', '.graphql', '.gql', '.proto',
+    '.dockerfile', '.makefile', '.cmake', '.gradle', '.csv', '.tsv',
+    '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.ico',
     '.pptx', '.xlsx', '.xls', '.pdf', '.docx'
 ]
 

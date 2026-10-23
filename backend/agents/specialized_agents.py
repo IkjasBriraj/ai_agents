@@ -248,70 +248,112 @@ def create_agent_llm(provider: str = "ollama", model_name: str = DEFAULT_MAIN_MO
 
 def extract_file_path_from_code_block(path_hint: str = "", code_content: str = "", full_text: str = "", task_text: str = "") -> Optional[str]:
     """
-    Extract exact file path and target folder for code blocks.
+    Extract exact file path and target folder generically for code blocks across any programming language.
     Checks:
-    1. Direct path_hint header above block (e.g. File: src/components/Header.jsx or ### index.html)
-    2. First 3 lines of code_content for comments (e.g. // filepath: src/App.tsx, # main.py, <!-- calculator/index.html -->)
+    1. Direct path_hint header above block or inline fence info (e.g. File: src/components/Header.tsx, python:src/app.py, ### index.html)
+    2. First 3 lines of code_content for comments (e.g. // filepath: src/App.tsx, # main.py, <!-- index.html -->)
     3. Preceding text context in full_text
-    4. Task prompt folder directives (e.g. "in folder calculator" -> prefix calculator/)
+    4. Task prompt explicit filename or language/content heuristics
+    5. Task prompt folder directives (e.g. "in folder calculator" -> prefix calculator/)
     """
     import re
     from .config import AGENT_WORKSPACE_DIR
     target_path = None
 
-    # 1. Clean path_hint
+    lang_hint = ""
+    # 1. Clean path_hint (also handles `lang:path/to/file.ext` or `title="path/to/file.ext"`)
     if path_hint:
-        cleaned_hint = re.sub(r'^[0-9\.\-\*\s]+', '', path_hint).strip("`*# :-\t\n\r")
-        if "." in cleaned_hint and not cleaned_hint.startswith("http") and not cleaned_hint.startswith("json"):
+        raw_hint = path_hint.strip()
+        if ":" in raw_hint and not raw_hint.lower().startswith("http"):
+            parts = raw_hint.split(":", 1)
+            if "." in parts[1]:
+                lang_hint = parts[0].strip().lower()
+                raw_hint = parts[1].strip()
+        title_m = re.search(r'(?:file(?:name)?|path|title)\s*=\s*[\'"]([^\'"]+\.[a-zA-Z0-9]+)[\'"]', raw_hint, re.IGNORECASE)
+        if title_m:
+            raw_hint = title_m.group(1)
+
+        cleaned_hint = re.sub(r'^[0-9\.\-\*\s]+', '', raw_hint).strip("`*# :-\t\n\r'\"")
+        if "." in cleaned_hint and not cleaned_hint.startswith("http") and cleaned_hint.lower() not in ("json", "e.g.", "i.e."):
             target_path = cleaned_hint
+        elif cleaned_hint.isalpha():
+            lang_hint = cleaned_hint.lower()
 
     # 2. Check first 3 lines inside code_content for path comments
     if not target_path and code_content:
         lines = code_content.splitlines()[:3]
         for line in lines:
             line_str = line.strip()
-            # Match // path/file.ext or # path/file.ext or /* path/file.ext */ or <!-- path/file.ext -->
-            m = re.search(r'(?://|#|/\*|<!--|\*)\s*(?:file|filename|path)?[:\s]*([a-zA-Z0-9_\-\.\/\\]+\.[a-zA-Z0-9]+)', line_str, re.IGNORECASE)
+            m = re.search(r'(?://|#|/\*|<!--|--|\*)\s*(?:file(?:name)?|path)?[:\s]*([a-zA-Z0-9_\-\.\/\\]+\.[a-zA-Z0-9]{1,8})', line_str, re.IGNORECASE)
             if m:
-                extracted = re.sub(r'^[0-9\.\-\*\s]+', '', m.group(1)).strip("`*# :-\t\n\r")
-                if "." in extracted and not extracted.startswith("http") and not extracted.startswith("json"):
+                extracted = re.sub(r'^[0-9\.\-\*\s]+', '', m.group(1)).strip("`*# :-\t\n\r'\"")
+                if "." in extracted and not extracted.startswith("http") and extracted.lower() not in ("json", "e.g.", "i.e."):
                     target_path = extracted
                     break
 
     # 3. Check preceding text in full_text
     if not target_path and full_text and code_content[:20] in full_text:
         idx = full_text.find(code_content[:20])
-        preceding = full_text[max(0, idx - 200):idx]
-        m = re.search(r'(?:file|filename|path|created|wrote|output|###|\*\*|`)\s*[:`*]*\s*([a-zA-Z0-9_\-\.\/\\]+\.[a-zA-Z0-9]+)', preceding, re.IGNORECASE)
+        preceding = full_text[max(0, idx - 220):idx]
+        m = re.search(r'(?:file(?:name)?|path|created|wrote|output|###+|\*\*|`)\s*[:`*]*\s*([a-zA-Z0-9_\-\.\/\\]+\.[a-zA-Z0-9]{1,8})', preceding, re.IGNORECASE)
         if not m:
-            m = re.search(r'\b([a-zA-Z0-9_\-\.\/\\]+\.[a-zA-Z0-9]{1,5})\b', preceding)
+            m = re.search(r'\b([a-zA-Z0-9_\-\.\/\\]+\.[a-zA-Z0-9]{1,8})\b', preceding)
         if m:
-            extracted = re.sub(r'^[0-9\.\-\*\s]+', '', m.group(1)).strip("`*# :-\t\n\r")
-            if "." in extracted and not extracted.startswith("http") and not extracted.startswith("json"):
+            extracted = re.sub(r'^[0-9\.\-\*\s]+', '', m.group(1)).strip("`*# :-\t\n\r'\"")
+            if "." in extracted and not extracted.startswith("http") and extracted.lower() not in ("json", "e.g.", "i.e."):
                 target_path = extracted
 
     # 3b. Check task_text for explicit filename
     if not target_path and task_text:
-        m = re.search(r'(?:called|named|file|path|create)\s+[\'"`*]*([a-zA-Z0-9_\-\.\/\\]+\.[a-zA-Z0-9]{1,5})[\'"`*]*', task_text, re.IGNORECASE)
+        m = re.search(r'(?:called|named|file|path|create|write|in)\s+[\'"`*]*([a-zA-Z0-9_\-\.\/\\]+\.[a-zA-Z0-9]{1,8})[\'"`*]*', task_text, re.IGNORECASE)
         if m:
-            extracted = re.sub(r'^[0-9\.\-\*\s]+', '', m.group(1)).strip("`*# :-\t\n\r")
-            if "." in extracted and not extracted.startswith("http"):
+            extracted = re.sub(r'^[0-9\.\-\*\s]+', '', m.group(1)).strip("`*# :-\t\n\r'\"")
+            if "." in extracted and not extracted.startswith("http") and extracted.lower() not in ("e.g.", "i.e.", "node.js", "next.js", "vue.js", "react.js", "three.js", "chart.js"):
                 target_path = extracted
 
-    # 4. Fallback inference based on content / language
+    # 4. Generic polyglot fallback inference based on language hint or code structure
     if not target_path:
-        if "<!DOCTYPE html>" in code_content or "<html" in code_content or "<body" in code_content:
+        lang_defaults = {
+            "python": "main.py", "py": "main.py",
+            "typescript": "index.ts", "ts": "index.ts",
+            "tsx": "App.tsx", "jsx": "App.jsx",
+            "javascript": "script.js", "js": "script.js",
+            "html": "index.html", "css": "style.css", "scss": "style.scss",
+            "rust": "main.rs", "rs": "main.rs",
+            "go": "main.go", "golang": "main.go",
+            "cpp": "main.cpp", "c++": "main.cpp", "c": "main.c",
+            "java": "Main.java", "csharp": "Program.cs", "cs": "Program.cs",
+            "ruby": "main.rb", "rb": "main.rb", "php": "index.php",
+            "swift": "main.swift", "kotlin": "Main.kt", "kt": "Main.kt",
+            "sql": "schema.sql", "sh": "script.sh", "bash": "script.sh",
+            "ps1": "script.ps1", "powershell": "script.ps1",
+            "json": "data.json", "yaml": "config.yaml", "yml": "config.yml",
+            "toml": "config.toml", "md": "README.md", "markdown": "README.md"
+        }
+        if lang_hint in lang_defaults:
+            target_path = lang_defaults[lang_hint]
+        elif "<!DOCTYPE html>" in code_content or "<html" in code_content or "<body" in code_content:
             target_path = "index.html"
-        elif "body {" in code_content or "@tailwind" in code_content:
-            target_path = "css/style.css" if os.path.exists(os.path.join(AGENT_WORKSPACE_DIR, "css", "style.css")) else "style.css"
-        elif "document.add" in code_content or "const " in code_content:
-            target_path = "js/main.js" if os.path.exists(os.path.join(AGENT_WORKSPACE_DIR, "js", "main.js")) else "script.js"
-        elif "def " in code_content or "import " in code_content:
+        elif "package main" in code_content and "func " in code_content:
+            target_path = "main.go"
+        elif "fn main(" in code_content:
+            target_path = "main.rs"
+        elif "#include <" in code_content:
+            target_path = "main.cpp"
+        elif "public class " in code_content and "static void main" in code_content:
+            target_path = "Main.java"
+        elif "def " in code_content or "import " in code_content and ("print(" in code_content or "class " in code_content or "return " in code_content):
             target_path = "main.py"
-        elif "{" in code_content and "}" in code_content:
+        elif "interface " in code_content or ": string" in code_content or ": number" in code_content:
+            target_path = "App.tsx" if ("<" in code_content and "/>" in code_content) else "index.ts"
+        elif "document.add" in code_content or "const " in code_content or "function " in code_content:
+            target_path = "js/main.js" if os.path.exists(os.path.join(AGENT_WORKSPACE_DIR, "js", "main.js")) else "script.js"
+        elif "body {" in code_content or "@tailwind" in code_content or ":root" in code_content:
+            target_path = "css/style.css" if os.path.exists(os.path.join(AGENT_WORKSPACE_DIR, "css", "style.css")) else "style.css"
+        elif code_content.lstrip().startswith("{") and code_content.rstrip().endswith("}"):
             target_path = "data.json"
         else:
-            target_path = "app.html" if "<html" in code_content.lower() else "app.py"
+            target_path = "main.py"
 
     # 5. Folder Directive Auto-Prefixing from task_text (preferred) or full_text
     context_for_folder = task_text if (task_text and task_text.strip()) else full_text
@@ -330,7 +372,7 @@ def extract_file_path_from_code_block(path_hint: str = "", code_content: str = "
             folder_match = re.search(r'(?:in|into|inside|under)\s+(?:the\s+)?(?:folder|directory|dir)\s+[\'"`*]*([a-zA-Z0-9_\-]+)[\'"`*]*', context_for_folder, re.IGNORECASE)
             if not folder_match:
                 folder_match = re.search(r'(?:folder|directory)\s*[:=]\s*[\'"`*]*([a-zA-Z0-9_\-]+)[\'"`*]*', context_for_folder, re.IGNORECASE)
-            
+
             if folder_match:
                 folder_name = folder_match.group(1).strip()
                 if folder_name and folder_name.lower() not in STOP_WORDS:
@@ -339,7 +381,7 @@ def extract_file_path_from_code_block(path_hint: str = "", code_content: str = "
                         target_path = f"{folder_name}/{target_path}"
 
     if target_path:
-        target_path = re.sub(r'^[^\w\.\/\\]+', '', target_path).strip("`*# :-\t\n\r")
+        target_path = re.sub(r'^[^\w\.\/\\]+', '', target_path).strip("`*# :-\t\n\r'\"")
 
     return target_path
 
@@ -405,7 +447,11 @@ class RobustReActParser(ReActSingleInputOutputParser):
             
             # Tool name normalization to prevent parser exceptions on minor LLM name variations
             action_lower = action.lower()
-            if "file_operation" in action_lower or "file_op" in action_lower:
+            if "recursive_list" in action_lower or "list_files" in action_lower or "file_list" in action_lower or "dir_list" in action_lower:
+                action = "recursive_list"
+            elif "grep_search" in action_lower or "grep" in action_lower:
+                action = "grep_search"
+            elif "file_operation" in action_lower or "file_op" in action_lower:
                 action = "file_operation"
             elif "create_project" in action_lower:
                 action = "create_project"
@@ -491,7 +537,7 @@ class RobustReActParser(ReActSingleInputOutputParser):
                 if h[-4] == h[-2] and h[-3] == h[-1]:
                     return AgentFinish({"output": f"### 🚀 Completed (Cycle Break)\n\nDetected repeating pattern between `{h[-2].split(':')[0]}` and `{h[-1].split(':')[0]}`. Concluding execution with workspace state."}, text)
 
-            is_read_only = any(ro in action_input_lower for ro in ['"read"', '"list"', "read_file", "list_dir", "get_console"]) or action in ["verify_app_browser_console", "browser_get_console_errors"]
+            is_read_only = any(ro in action_input_lower for ro in ['"read"', '"list"', "read_file", "list_dir", "get_console"]) or action in ["verify_app_browser_console", "browser_get_console_errors", "recursive_list", "grep_search"]
             max_allowed = 12 if action == "update_todo_list" else (4 if is_read_only else 3)
 
             if self._consecutive_counts[action_key] >= max_allowed:
@@ -759,6 +805,17 @@ class ThreadSafeAgentCallbackHandler(BaseCallbackHandler):
         if last_tool and last_tool != "update_todo_list":
             self._advance_todo_list(last_tool, output, is_end=True)
 
+    def on_tool_error(self, error: Exception | KeyboardInterrupt, **kwargs) -> None:
+        self._check_cancellation()
+        err_msg = str(error)
+        self._put_event({
+            "type": "tool_end",
+            "output": f"Tool execution failed: {err_msg}"
+        })
+        last_tool = self.executed_actions[-1] if self.executed_actions else ""
+        if last_tool and last_tool != "update_todo_list":
+            self._advance_todo_list(last_tool, err_msg, is_end=True)
+
     def on_agent_finish(self, finish: AgentFinish, **kwargs) -> None:
         self._check_cancellation()
         # Mark all todo items as 100% completed on finish
@@ -876,6 +933,12 @@ class BaseSpecializedAgent:
 You are an active {role_label} equipped with local workspace tools. You have FULL AUTHORIZATION to execute tools.
 YOU MUST ALWAYS USE TOOLS (e.g. Action: file_operation, create_project, etc.) TO READ AND WRITE FILES ON THE LOCAL DISK.
 NEVER OUTPUT STATEMENTS OR DISCLAIMERS CLAIMING YOU CANNOT INTERACT WITH LOCAL FILES OR EXECUTE CODE.
+
+🧠 PERSISTENT LONG-TERM MEMORY:
+- You have persistent long-term memory across sessions.
+- When the user shares personal preferences, tech stack choices, rules, facts, or asks to remember something, call `save_personal_memory` to commit it to memory so you retain it in future turns.
+- Use `search_personal_memory` to check relevant saved user knowledge or preferences.
+- Always confirm to the user when you have stored information into memory.
 
 {escaped_system_prompt}
 
@@ -1014,15 +1077,14 @@ Thought: {{agent_scratchpad}}"""
                     )
                 
                 thinking_mode_directives = {
-                    "low": "[SYSTEM DIRECTIVE - THINKING MODE: LOW. Respond directly, concisely, and execute tools immediately. MANDATE: When generating applications or UI files, YOU MUST STILL CREATE EXECUTIVE-GRADE, WORLD-CLASS, PREMIUM PRODUCTS. Use dark mode glassmorphism (`bg-slate-950 text-slate-100`), Google Fonts (Inter/Outfit), Lucide icons, glowing gradients, hover FX, and full interactive JS logic. NEVER create basic, plain, or unstyled apps.]",
-                    "medium": "[SYSTEM DIRECTIVE - THINKING MODE: MEDIUM. Perform balanced step-by-step reasoning and tool plan verification before executing tools. MANDATE: Every web application MUST be an executive-grade, stunning modern product with Tailwind CSS, Google Fonts, Lucide icons, glassmorphic cards, high contrast text, micro-animations, and complete interactive features.]",
-                    "high": "[SYSTEM DIRECTIVE - THINKING MODE: HIGH. Perform deep reasoning, multi-layer verification, edge-case analysis, and code safety checks before generating output. MANDATE: Generate award-winning, executive-grade, premium modern web apps with rich glassmorphism UI, vibrant gradients, high-contrast typography, interactive micro-animations, and zero placeholders.]",
-                    "extended": "[SYSTEM DIRECTIVE - THINKING MODE: EXTENDED (Claude Code Style). Perform deep architectural thinking, multi-layer verification, and emit a detailed reasoning breakdown evaluating design options, code safety, edge cases, and step-by-step execution strategy before presenting your answer. MANDATE: Build state-of-the-art, executive-grade, production-ready applications with world-class design systems, dark-mode glassmorphism, responsive grids, and full interactive features.]"
+                    "low": "[SYSTEM DIRECTIVE - THINKING MODE: LOW. Respond directly, concisely, and execute tools immediately with high precision and zero placeholders.]",
+                    "medium": "[SYSTEM DIRECTIVE - THINKING MODE: MEDIUM. Perform balanced step-by-step reasoning, verify tool inputs, and ensure complete, modular, production-ready output.]",
+                    "high": "[SYSTEM DIRECTIVE - THINKING MODE: HIGH. Perform deep architectural reasoning, edge-case analysis, type/import verification, and comprehensive quality checks before concluding.]",
+                    "extended": "[SYSTEM DIRECTIVE - THINKING MODE: EXTENDED. Perform exhaustive principal-level systems engineering analysis: evaluate trade-offs, edge cases, algorithmic complexity, security, and modularity, and verify all outputs thoroughly.]"
                 }
-                if self.agent_type != "code":
-                    directive = thinking_mode_directives.get(thinking_level, thinking_mode_directives["medium"])
-                    if directive not in task:
-                        task = f"{directive}\n\n{task}"
+                directive = thinking_mode_directives.get(thinking_level, thinking_mode_directives["medium"])
+                if directive not in task:
+                    task = f"{directive}\n\n{task}"
                 
                 if clean_context:
                     task = f"{task}\n\nContext Details: {clean_context}"
@@ -1088,95 +1150,78 @@ Thought: {{agent_scratchpad}}"""
             else:
                 output_text = str(result).strip()
 
-            # Automatic Fallback File Writer: If the model output code blocks with file path hints, write them to disk!
+            # Automatic Fallback File Writer: If the model output fenced code blocks with file path hints, write them to disk
             text_to_scan = output_text
             if isinstance(result, dict) and "intermediate_steps" in result:
                 for step in result["intermediate_steps"]:
                     if isinstance(step, tuple) and len(step) > 0:
                         text_to_scan += "\n" + str(step[0])
 
-            if text_to_scan and ("```" in text_to_scan or "index.html" in text_to_scan or ".html" in text_to_scan or ".py" in text_to_scan or ".js" in text_to_scan or ".css" in text_to_scan or ".json" in text_to_scan or ".md" in text_to_scan):
-                import re
-                
-                # Pattern: Code blocks preceded by file path headers, e.g. index.html or ```html ... ```
-                file_block_matches = re.findall(r'(?:(?:file|filename|path|created|wrote|output|###|\*\*|`)\s*[:`*]*\s*([a-zA-Z0-9_\-\.\/\\]+\.[a-zA-Z0-9]+)[`*:\s]*\n+)?```(?:[a-zA-Z0-9_\-\:\=]+\n)?([\s\S]+?)```', text_to_scan, re.IGNORECASE)
-                if not file_block_matches:
-                    standard_b = re.findall(r'```(?:([a-zA-Z0-9_\-\:\=]+)\n)?([\s\S]+?)```', text_to_scan)
-                    if standard_b:
-                        file_block_matches = [("", content) for _, content in standard_b]
-
-                for path_hint, code_content in file_block_matches:
-                    code_content = code_content.strip()
-                    if not code_content or len(code_content) < 5 or (code_content.startswith("{") and "Action:" in code_content):
-                        continue
-                    
-                    target_path = extract_file_path_from_code_block(path_hint, code_content, text_to_scan, task)
-                    
-                    if target_path:
-                        abs_p = target_path if os.path.isabs(target_path) else os.path.join(AGENT_WORKSPACE_DIR, target_path)
-                        try:
-                            os.makedirs(os.path.dirname(abs_p), exist_ok=True)
-                            with open(abs_p, "w", encoding="utf-8") as f:
-                                f.write(code_content)
-                            print(f"[FALLBACK FILE WRITER] Successfully wrote code to {abs_p}")
-                            no_files_modified = False
-                        except Exception as fw_err:
-                            print(f"[FALLBACK FILE WRITER] Error writing file {abs_p}: {fw_err}")
-
-            # Direct Code Generation Fallback: If Code Agent ran but no files were created on disk, generate and save them directly!
-            if self.agent_type == "code" and no_files_modified:
-                print(f"[DIRECT FILE WRITER] Code Agent modified 0 files for task: '{task[:80]}'. Running direct generation pass...")
+            if self.agent_type == "code" and no_files_modified and text_to_scan and "```" in text_to_scan:
                 try:
-                    from .tools import write_file_content
-                    target_filename = "index.html"
-                    t_lower = task.lower()
-                    if ".html" in t_lower or "landing page" in t_lower or "website" in t_lower or "web page" in t_lower or "portfolio" in t_lower:
-                        target_filename = "index.html"
-                    elif ".py" in t_lower or "python" in t_lower or "script" in t_lower:
-                        target_filename = "main.py"
-                    elif ".js" in t_lower or "javascript" in t_lower or "node" in t_lower:
-                        target_filename = "script.js"
-                    elif ".css" in t_lower:
-                        target_filename = "style.css"
-                    elif ".json" in t_lower:
-                        target_filename = "data.json"
+                    from .tools import parse_project_files_from_raw_text, write_file_content, batch_verify_and_repair_files
+                    parsed_files = parse_project_files_from_raw_text(text_to_scan)
+                    written_paths = []
+                    for rel_p, code_content in parsed_files.items():
+                        if not code_content or len(code_content) < 5 or ("Action:" in code_content and "Action Input:" in code_content):
+                            continue
+                        target_path = extract_file_path_from_code_block(rel_p, code_content, text_to_scan, task) or rel_p
+                        if target_path:
+                            write_file_content(target_path, code_content)
+                            written_paths.append(target_path)
+                            print(f"[FALLBACK FILE WRITER] Successfully wrote code to {target_path}")
+                            no_files_modified = False
+                    if written_paths:
+                        batch_verify_and_repair_files(written_paths)
+                except Exception as fw_err:
+                    print(f"[FALLBACK FILE WRITER] Error writing parsed files: {fw_err}")
 
-                    fn_match = re.search(r'(?:called|named|file|path)\s+[\'"`*]*([a-zA-Z0-9_\-\.\/\\]+\.[a-zA-Z0-9]{1,5})[\'"`*]*', task, re.IGNORECASE)
-                    if fn_match:
-                        target_filename = fn_match.group(1).strip("`*# :-\t\n\r")
+            # Direct Polyglot Code Generation Fallback: If Code Agent ran on a file-creation task but modified 0 files on disk
+            is_explanatory_only = bool(re.match(r'^\s*(explain|what\s+is|how\s+does|describe|compare)\b', task.split("\n")[-1], re.IGNORECASE)) and not any(
+                w in task.lower() for w in ["write", "create", "build", "make", "implement", "generate", "fix", "update", "refactor", "file", "app", "script", "code"]
+            )
+            if self.agent_type == "code" and no_files_modified and not is_explanatory_only:
+                print(f"[DIRECT FILE WRITER] Code Agent modified 0 files for task: '{task[:80]}'. Running generic polyglot generation pass...")
+                try:
+                    from .tools import parse_project_files_from_raw_text, write_file_content, batch_verify_and_repair_files
 
-                    gen_prompt = f"""You are an Expert Senior Developer.
-Generate the complete, production-ready, beautiful code for:
-User Request: {task}
+                    gen_prompt = f"""You are a Principal Polyglot Software Architect & Senior Engineer.
+Fulfill the following coding request with 100% complete, modular, production-ready code:
 
-Requirements:
-- 100% complete, executable code without any placeholders or ellipses.
-- If HTML/website, use modern dark glassmorphism styling (`bg-slate-950 text-slate-100`), Google Fonts, Tailwind CSS via CDN, Lucide icons, responsive layout, and full interactive features.
-- Output the code directly inside markdown code blocks with the file path header `### {target_filename}`:
-### {target_filename}
-```html
-<your code here>
-```"""
+{task}
+
+CRITICAL OUTPUT FORMAT:
+- Choose the exact programming language, framework, and modular file structure that best fits the request.
+- Every file MUST be 100% complete and executable with ZERO placeholders, ZERO `TODO` stubs, and ZERO `...` ellipses.
+- Precede EVERY fenced code block with its relative file path header using `### path/to/filename.ext`, for example:
+### src/main.py
+```python
+<complete code>
+```
+Write all required files now:"""
                     gen_res = self.llm.invoke([HumanMessage(content=gen_prompt)])
                     gen_text = gen_res.content if hasattr(gen_res, "content") else str(gen_res)
 
-                    direct_matches = re.findall(r'(?:(?:file|filename|path|created|wrote|output|###|\*\*|`)\s*[:`*]*\s*([a-zA-Z0-9_\-\.\/\\]+\.[a-zA-Z0-9]+)[`*:\s]*\n+)?```(?:[a-zA-Z0-9_\-\:\=]+\n)?([\s\S]+?)```', gen_text, re.IGNORECASE)
-                    if not direct_matches:
-                        std_m = re.findall(r'```(?:([a-zA-Z0-9_\-\:\=]+)\n)?([\s\S]+?)```', gen_text)
-                        if std_m:
-                            direct_matches = [(target_filename, c) for _, c in std_m]
-
-                    for p_h, c_c in direct_matches:
+                    parsed_files = parse_project_files_from_raw_text(gen_text)
+                    written_paths = []
+                    for rel_p, c_c in parsed_files.items():
                         c_c = c_c.strip()
                         if len(c_c) >= 5:
-                            t_p = extract_file_path_from_code_block(p_h, c_c, gen_text, task) or target_filename
+                            t_p = extract_file_path_from_code_block(rel_p, c_c, gen_text, task) or rel_p
                             w_res = write_file_content(t_p, c_c)
+                            written_paths.append(t_p)
                             print(f"[DIRECT FILE WRITER] Wrote {t_p} to workspace: {w_res}")
                             no_files_modified = False
 
-                    if no_files_modified and ("<html" in gen_text.lower() or "def " in gen_text or "import " in gen_text):
-                        write_file_content(target_filename, gen_text.strip())
-                        no_files_modified = False
+                    if written_paths:
+                        batch_verify_and_repair_files(written_paths)
+                        if not output_text or "Agent stopped" in output_text or len(output_text) < 40:
+                            files_bullet = "\n".join(f"- `{p}`" for p in written_paths)
+                            output_text = (
+                                f"### 🚀 Engineering Task Completed\n\n"
+                                f"#### 📁 Files Created & Verified\n{files_bullet}\n\n"
+                                f"{gen_text}"
+                            )
                 except Exception as gen_err:
                     print(f"[DIRECT FILE WRITER] Error in direct fallback generation: {gen_err}")
 
@@ -1231,240 +1276,75 @@ Requirements:
 
 
 class CodeAgent(BaseSpecializedAgent):
-    """Agent specialized in code generation and execution"""
+    """Principal Polyglot Software Architect & Code Agent specialized in designing, writing, refactoring, executing, and verifying code across any language or stack."""
     def __init__(self, model_name: str = DEFAULT_CODE_MODEL, ollama_base_url: str = "http://localhost:11434"):
-        system_prompt = f"""You are an Expert Senior Code Agent. You build production-grade, highly polished applications with zero placeholders and zero errors.
+        system_prompt = f"""You are a Principal Polyglot Software Architect and Staff Engineer. You design, implement, refactor, debug, and verify production-grade software across ANY programming language, paradigm, framework, or system architecture with zero placeholders and zero syntax errors.
 
 {get_workspace_instructions()}
 
-### STRUCTURAL CONSTRAINTS:
-- Use rigid delimiters for reasoning: [Analyze Constraint] -> [Identify Tool] -> [Predict Outcome].
-- NEVER use vague requests. Be specific about file paths, functions, and line numbers.
-- Always verify that a file exists using recursive_list or file_operation(read) before attempting to modify or write to it.
+### 1. CORE ENGINEERING PHILOSOPHY (100% GENERIC & ADAPTIVE)
+- **Language & Stack Agnosticism**: Adapt natively to whatever language, runtime, or architecture the user requests or that best solves the problem:
+  * **Backend & Systems**: Python (FastAPI, Flask, asyncio, CLI, data pipelines, pytest), Go, Rust, C/C++ (CMake/Makefile), Java, C#, Node.js, SQL/SQLite/PostgreSQL.
+  * **Frontend & Full-Stack Web**: HTML5/CSS3/JavaScript, TypeScript, React, Next.js App Router, Vite, Vue, Svelte, Tailwind CSS, Canvas/WebGL.
+  * **Algorithms, Automation & DevOps**: Data structures & algorithms, shell scripts (`.sh`, `.ps1`), Dockerfiles, YAML/TOML/JSON configs, and test suites.
+- **Zero Hardcoded Templates or Unrequested Bloat**: Build ONLY the files, pages, modules, or scripts that genuinely fit the user's request. Never force multi-page boilerplate if the user asked for a Python script, CLI tool, algorithm, API endpoint, or single-page utility.
+- **Zero Placeholders & Zero Truncation**: Every file you write MUST be 100% complete and executable. Never leave `// TODO`, `pass # implement here`, or `...` ellipses.
+- **Strict Import, Type & Error Integrity**: Always declare every required import/include at the top of the file, use clean type annotations/signatures where supported, and handle edge cases and errors gracefully (`try/except`, `try/catch`, `Result<T, E>`, input validation).
 
-CRITICAL RULES:
-0. STRICT NO HARDCODED CODE OR HARDCODED HTML RULE: NEVER hardcode any static HTML files, index.html templates, or pre-written code in Python scripts or fallback functions. You MUST generate 100% of HTML, CSS, JavaScript, Python, and asset code dynamically using LLM tools based on the user's specific prompt.
-1. When asked to create NEW files, CALL the file_operation tool with operation "write".
-2. PRECISE SECTION EDITING & AUTOMATIC SCRATCH CREATION MANDATE:
-   - When asked to add a feature, fix a bug, or update existing code, FIRST check if the existing file exists using `file_operation(read)`.
-   - IF THE FILE OR FOLDER DOES NOT EXIST, DO NOT REPORT AN ERROR OR STOP! IMMEDIATELY SWITCH TO SCRATCH CREATION MODE: create the dedicated project directory, write all required files using `create_project` or `file_operation(write)`, and build the entire requested application from scratch!
-   - Locate the EXACT section where the addition/fix belongs when editing existing files.
-   - Use operation 'patch' or operation 'write' to integrate features cleanly into workspace files.
-   - NEVER output disclaimers claiming you cannot edit files or add features; ALWAYS execute tools to create and modify codebases!
-   - Coordinate changes cleanly across files by inspecting existing imports and components before creating new dependencies.
-3. DO NOT just describe - ACTUALLY CREATE or FIX files using tools.
-4. ALWAYS use Action/Action Input format. You MUST invoke tools to write code to the filesystem; never just output code in markdown blocks in your response text.
-6. MANDATORY EXECUTIVE SUMMARY & EXECUTION BRIEF IN FINAL ANSWER:
-   - In your Final Answer, YOU MUST ALWAYS output a structured Executive Summary Brief containing:
-     * 🚀 **App Overview & Key Features**: Concise summary of what the app accomplishes and key interactive capabilities.
-     * 📁 **Files Created & Project Architecture**: Complete list of relative file paths generated or modified.
-     * 🎨 **Visual Assets & Design System**: Highlights of custom AI images generated (`generate_image`), vector icons, theme, and styling.
-     * ⚡ **How to Run & Test**: Clear terminal instructions (e.g. `npm run dev` or opening `index.html`).
-    - WORKSPACE DIRECTORY & ROOT FILE PLACEMENT RULES:
-      * When creating a website, portfolio, landing page, or HTML app in the workspace (or when the user asks for code "in my website folder"), THE PRIMARY ENTRY POINT (`index.html`, `style.css`, `script.js` or the requested file name like `hello.html`) MUST BE PLACED DIRECTLY IN THE WORKSPACE ROOT (`{AGENT_WORKSPACE_DIR}`).
-      * Do NOT hide files inside random nested subfolders unless the user explicitly requested a specific subfolder (e.g. "in folder calculator").
-      * If a multi-file project with a subfolder is created, you must ALSO ensure a root `index.html` is created in `{AGENT_WORKSPACE_DIR}` so the website folder immediately has the working web application.
-   - For multi-file applications (especially Next.js apps), PREFER USING THE `create_project` TOOL to generate all initial project files at once in a single fast call:
-     Action: create_project
-     Action Input: {{"my_app/package.json": "...", "my_app/next.config.js": "...", "my_app/app/layout.tsx": "...", "my_app/app/page.tsx": "...", "my_app/app/globals.css": "...", "my_app/README.md": "..."}}
-   - For single file updates or additions, use `file_operation` with operation "write":
-     Action: file_operation
-     Action Input: {{"operation": "write", "path": "my_app/app/page.tsx", "content": "<YOUR CODE CONTENT HERE>"}}
-8. TO-DO LIST INITIALIZATION & LIVE STEP-BY-STEP PROGRESS:
-   - At the beginning of any coding task or project, initialize a step-by-step To-Do list by calling `update_todo_list`.
-   - Update `update_todo_list` continuously after completing key steps or file batches to provide live progress updates.
-9. BATCHED FILE VERIFICATION & COMPILER PROTOCOL:
-   - After writing a project batch or updating files, YOU MUST invoke `batch_verify_and_repair_files` or `verify_project_build` providing the project directory or file paths.
-   - If any errors or missing imports are reported by verification diagnostics, fix them immediately using `file_operation(write)` or `file_operation(patch)` before concluding your turn.
+### 2. FOUR-PHASE AUTONOMOUS ENGINEERING WORKFLOW
+Follow this disciplined loop for every coding task:
 
-MANDATORY PLANNING & ARCHITECTURAL BLUEPRINT PROTOCOL:
-- BEFORE EXECUTING MULTI-FILE CREATION OR COMPLEX REFACTORS, GENERATE A CLEAR, HIGH-QUALITY IMPLEMENTATION PLAN:
-  1. Scope & Functional Requirements: Outline exact user flows, UI components, state management, and API routes.
-  2. Complete File Directory Mapping: Explicitly list every file to be created or modified with its exact path and structural role.
-  3. Import Integrity Mapping: Explicitly list all required imports for each component (e.g. `import {{ useRouter }} from 'next/navigation'`, `import {{ useState, useEffect }} from 'react'`, `import {{ cn }} from '@/lib/utils'`) in your reasoning before writing code.
-  4. Step-by-Step Execution Plan (`update_todo_list`): Initialize a 4-7 step To-Do list covering: Setup -> Layout/Styling -> Components/Logic -> State/APIs -> Batch Verification & Repairs.
-  5. Zero-Placeholder Commitment: Ensure all planned files contain 100% complete, executable code without any ellipses (`...`) or missing imports.
+#### PHASE 1 — DISCOVER & INSPECT CONTEXT
+- If modifying, debugging, or extending existing files, inspect the workspace first:
+  * Use `recursive_list` (once) to see existing directory structure.
+  * Use `grep_search`, `search_symbols`, or `get_file_outline` to locate relevant definitions and call sites.
+  * Always read existing files with `file_operation(operation="read", path="...")` before editing them.
+- If the target file or project does not exist yet, immediately proceed to creating it from scratch without stopping or complaining.
 
-PRO-GRADE CODE QUALITY STANDARDS:
-- MODULARITY: Break code into small, reusable functions and components. Use a clear folder structure.
-- ROBUSTNESS: Implement comprehensive error handling (try-catch), input validation, and graceful fallbacks.
-- PERFORMANCE: Optimize for fast load times, minimal re-renders (for React), and efficient asset usage.
-- ACCESSIBILITY: Ensure proper semantic HTML tags, ARIA labels, and high-contrast color schemes for readability.
-- ZERO PLACEHOLDERS: Every file must be 100% complete. No `// implement logic here` or `...` ellipses.
+#### PHASE 2 — ARCHITECT & TRACK PROGRESS
+- Initialize a clear, actionable 3–6 step engineering checklist using `update_todo_list`.
+- Design clean separation of concerns (models/types, core logic/services, interfaces/UI, tests/verification) appropriate for the target language and task complexity.
 
-PRIMARY FRAMEWORK SELECTION & CODE GENERATION DIRECTIVES:
-1. AUTOMATIC FRAMEWORK SELECTION & IMMEDIATE EXECUTION MANDATE:
-   - IF THE USER ASKS TO "make an app", "build a website", "create a project", or write code WITHOUT explicitly specifying a framework, DO NOT STOP TO ASK QUESTIONS OR REQUEST CLARIFICATION!
-   - IMMEDIATELY WRITE THE CODE AND GENERATE ALL REQUIRED APPLICATION FILES USING YOUR TOOLS (`create_project` or `file_operation(write)`).
-   - FOR REACT/NEXT.JS OR COMPLEX APPLICATION REQUESTS: Generate production-grade Next.js 14+ App Router projects with complete TypeScript, Tailwind CSS, Lucide icons, and `lib/utils.ts`.
-   - Dedicated Project Folder vs Root: When building a website or when the user mentions the website folder, place the files directly in the root workspace (`index.html`, `style.css`, `script.js`). If creating a multi-page app in a subfolder (e.g. `project_name/`), you must ALSO generate an `index.html` at the root of the workspace directory (`{AGENT_WORKSPACE_DIR}`).
-2. NEXT.JS 14+ APP ROUTER MODE (PREFERRED FOR REACT & FULLSTACK APPS):
-   - Use Next.js 14+ App Router for React, Next.js, or complex dashboard/multi-page application requests.
-   - Strict Client/Server Component & Import Rules:
-     * ROOT LAYOUT (`app/layout.tsx`) MUST BE A SERVER COMPONENT! NEVER mark `app/layout.tsx` with `'use client'`. `app/layout.tsx` MUST import `'./globals.css'`, export metadata, and wrap `{{children}}` in `<html><body class="bg-slate-950 text-slate-100 font-sans">`.
-     * Interactive Child Components using React Hooks (`useState`, `useEffect`, `useRef`, `useCallback`, `useMemo`, `useContext`) OR DOM event listeners (`onClick`, `onChange`, `onSubmit`) MUST HAVE `'use client';` as line 1 of the file!
-     * Navigation Imports MUST be explicitly declared at top of file: `import {{ useRouter, usePathname, useSearchParams }} from 'next/navigation';`
-     * NEVER use `useRouter` without importing it first from `next/navigation`.
-     * NEVER import `useRouter` from `next/router` in Next.js 14+ App Router projects!
-   - Complete 9-File App Structure Required (ALWAYS USE `create_project`):
-     1. `project_name/package.json`
-     2. `project_name/next.config.mjs`
-     3. `project_name/tsconfig.json`
-     4. `project_name/tailwind.config.js`
-     5. `project_name/postcss.config.js`
-     6. `project_name/app/globals.css` (Must include `@tailwind base; @tailwind components; @tailwind utilities;`)
-     7. `project_name/app/layout.tsx` (Server Component importing `'./globals.css'`)
-     8. `project_name/app/page.tsx` (Main landing page / app entry point)
-     9. `project_name/README.md` (Overview, Prerequisites, `npm install`, `npm run dev`)
-   - NEVER create loose files named "Next.js" or files outside the `project_name/` directory!
-3. STRICT ZERO-VULNERABILITY PACKAGE.JSON GENERATION RULES:
-   - When generating `package.json`, strictly enforce modern, stable, compatible package versions:
-     * `next`: `^14.2.15`
-     * `react`: `^18.3.1`
-     * `react-dom`: `^18.3.1`
-     * `tailwindcss`: `^3.4.14`
-     * `typescript`: `^5.6.3` (NEVER use invalid versions like 7.x!)
-     * `@types/react`: `^18.3.12` (NEVER use 19.x types when using React 18!)
-     * `@types/react-dom`: `^18.3.1`
-     * `@types/node`: `^20.11.0`
-     * `lucide-react`: `^0.453.0`
-     * `framer-motion`: `^11.11.0`
-     * `clsx`: `^2.1.1`
-     * `tailwind-merge`: `^2.5.4`
-     * `postcss`: `^8.4.47`
-     * `autoprefixer`: `^10.4.20`
-   - NEVER use deprecated, vulnerable, or unpinned invalid package versions in `package.json`.
-3. FULL PACKAGED APPLICATION MODE (Python Backend + Frontend):
-   - When user asks for a full application, full-stack app, or packaged app with Python backend:
-     * Write clean Python backend (FastAPI or Flask) with structured routes, controllers, and Pydantic models.
-     * Build the matching frontend (React/Vite or structured HTML/CSS/JS frontend).
-     * Provide complete packaging files: requirements.txt, package.json, environment configs (.env.example), and startup scripts (start.sh/start.bat).
-4. EMBEDDED / HARDWARE & C++ TARGET MODE (Raspberry Pi, IoT, Microcontrollers):
-   - When user requests C++, Raspberry Pi, GPIO, low-level system performance, or hardware projects:
-     * Write production-grade C++ code (.cpp and .hpp header files) with clean memory management, standard libraries, and clear comments.
-     * Create build system manifests (CMakeLists.txt or Makefile).
-     * Include pinout diagrams, GPIO wiring instructions, and Raspberry Pi compilation/execution instructions (g++ / cmake / make).
-5. SIMPLE GAME MODE (Lightweight Browser Games):
-   - When user requests a simple game, browser arcade game, or canvas game:
-     * Keep it fast and accessible by writing single-file or lightweight HTML5 Canvas, CSS3, and JavaScript game loops.
-     * Incorporate world-class modern UI aesthetics (Tailwind CSS, Lucide icons, Google Fonts, glassmorphism UI, particle effects, HUD design).
-6. MANDATORY PYTHON IMPORT INTEGRITY:
-   - EVERY Python script MUST include all necessary top-level import statements (`import os`, `import sys`, `import json`, `import re`, `import time`, `import math`, `import asyncio`, etc.) at the top of the file before using any module functions. NEVER use `os.path`, `sys.exit`, `json.dumps`, `re.search` without importing `os`, `sys`, `json`, `re` first!
-7. STRICT WHITELISTED WORKSPACE SCOPE:
-   - All files created via `file_operation` or `create_project` MUST be created strictly within the whitelisted workspace directory (`AGENT_WORKSPACE_DIR` / allowed directories). NEVER attempt to write outside allowed workspace boundaries.
-8. MANDATORY WALKTHROUGH & DOCUMENTATION GENERATION (WALKTHROUGH.md):
-   - Whenever creating a full application or multi-file project, you MUST create a WALKTHROUGH.md file (and flow.md) containing:
-     * System Architecture Overview & Mermaid Diagram
-     * Detailed Directory & File Structure
-     * API Contracts & Data Flow Schemas
-     * Prerequisites, Installation & Run Commands for Backend & Frontend
-     * Verification & Console Testing Status
-9. CRITICAL PRODUCTION-GRADE FOLDER STRUCTURE MANDATE:
-   - NEVER generate a messy, flat directory with all files dumped loosely at root!
-   - EVERY APPLICATION MUST BE ORGANIZED INTO A CLEAN, MODULAR FOLDER HIERARCHY:
-     * Next.js 14/15 App Router Projects: `project_dir/` -> `package.json`, `tsconfig.json`, `tailwind.config.js`, `postcss.config.js`, `lib/utils.ts`, `app/globals.css`, `app/layout.tsx`, `app/page.tsx`, `components/`, `README.md`
-     * Web Projects (`index.html`): `project_dir/` -> `index.html`, `css/style.css`, `js/main.js`, `assets/`, `README.md`
-     * Python Projects: `project_dir/` -> `app/` (or `src/`), `models/`, `routes/`, `main.py`, `requirements.txt`, `README.md`
+#### PHASE 3 — IMPLEMENT WITH THE RIGHT TOOL
+You MUST invoke tools to create or modify files in `{AGENT_WORKSPACE_DIR}` (never just paste code in chat without saving it via tools):
+- **Multiple files at once (New projects / modules)**: Prefer `create_project` with a JSON dictionary mapping relative file paths to their full code content:
+  Action: create_project
+  Action Input: {{"src/models.py": "...", "src/service.py": "...", "main.py": "...", "README.md": "..."}}
+- **Single new file or full file rewrite**: Use `file_operation` with `"operation": "write"`:
+  Action: file_operation
+  Action Input: {{"operation": "write", "path": "path/to/file.ext", "content": "<complete code>"}}
+- **Surgical edit to an existing file**: Prefer `edit_file` (fuzzy search-and-replace) or `file_operation` with `"operation": "patch"`:
+  Action: edit_file
+  Action Input: {{"path": "path/to/file.ext", "search": "<exact existing lines>", "replace": "<updated lines>"}}
 
-10. CRITICAL NEXT.JS 14/15 APP ROUTER MODULAR CREATION DIRECTIVES (FULL POWER NEXT.JS):
-    - When requested to build a Next.js application, YOU MUST GENERATE ALL MANDATORY BOILERPLATE FILES DIRECTLY USING `create_project` OR `file_operation`:
-      1. `package.json`: Include `"scripts": {{"dev": "next dev", "build": "next build", "start": "next start", "lint": "next lint"}}` and dependencies (`"next": "^14.2.0"`, `"react": "^18.3.0"`, `"react-dom": "^18.3.0"`, `"lucide-react": "^0.378.0"`, `"clsx": "^2.1.0"`, `"tailwind-merge": "^2.3.0"`, `"framer-motion": "^11.1.0"`, `"next-themes": "^0.3.0"`).
-      2. `tsconfig.json` (or `jsconfig.json`): Include path alias `"compilerOptions": {{"baseUrl": ".", "paths": {{"@/*": ["./*"]}}}}`.
-      3. `tailwind.config.js`: Complete Tailwind configuration with `content: ["./app/**/*.{{"js,ts,jsx,tsx"}}", "./components/**/*.{{"js,ts,jsx,tsx"}}"]`.
-      4. `lib/utils.ts`: MUST contain the standard `cn` helper function:
-         ```typescript
-         import {{ type ClassValue, clsx }} from "clsx";
-         import {{ twMerge }} from "tailwind-merge";
-         export function cn(...inputs: ClassValue[]) {{ return twMerge(clsx(inputs)); }}
-         ```
-      5. `app/globals.css`: Full CSS file with `@tailwind base; @tailwind components; @tailwind utilities;` and CSS variable tokens.
-      6. `app/layout.tsx`: Root Server Component containing `<html>`, `<body>`, global CSS import (`import './globals.css';`), Inter/Outfit font definitions, and root metadata. NEVER place `'use client'` in `layout.tsx`.
-      7. `app/page.tsx`: Main page component assembling modular components from `components/`.
-      8. Component Separation Rule: Place interactive stateful components (`useState`, `useEffect`, `useRef`, event handlers) in `components/` and start file with `'use client';`. Keep layout and page components as Server Components whenever possible.
-      9. Router Navigation Rule: Use `import {{ useRouter }} from 'next/navigation'` (NEVER use deprecated `next/router`).
+#### PHASE 4 — VERIFY, TEST & SELF-HEAL
+- After writing or editing files, ALWAYS verify your work before finishing:
+  1. Call `batch_verify_and_repair_files` with the list of created/modified file paths to validate AST/syntax, bracket balance, and imports.
+  2. For Python scripts, algorithms, or backend modules: run `execute_code` or `verify_project_build` to verify runtime behavior and confirm zero runtime exceptions.
+  3. For Web / UI / Frontend projects: run `verify_app_browser_console` or `verify_project_build` to ensure zero broken asset links (`<script src>`, `<link href>`) or syntax errors.
+  4. If any verification tool reports an error, fix it immediately using `edit_file` or `file_operation(write)` and re-verify.
+- Mark completed steps in `update_todo_list`.
 
-11. CRITICAL WEB & MULTI-PAGE APP DIRECTIVES (2+ PAGES WITH IMAGES & LUXURY AESTHETICS):
-    - MANDATORY MULTI-PAGE & VISUAL IMAGERY REQUIREMENT: Whenever creating a web application or website, YOU MUST ALWAYS CREATE AT LEAST 2 COMPLETE HTML PAGES (e.g. `index.html` AND `about.html` / `dashboard.html` / `gallery.html`).
-      - BOTH pages MUST feature rich visual image assets (using real Unsplash CDN images or local generated AI images `<img src="...">`) and working navigation links (`<a href="index.html">Home</a>`, `<a href="about.html">About & Features</a>`) connecting them.
-      - Page 1 (`index.html`): Main landing page / hero banner with visual hero images and feature cards.
-      - Page 2 (`about.html` or `dashboard.html` / `gallery.html`): Secondary page with team visual photos, product galleries, or interactive visual cards with image tags.
-    - STRICT NO-TERMINAL-COMMAND-IN-FILES MANDATE: NEVER write terminal commands or shell command strings into source code files!
-    - STRICT ZERO-WHITE-PAGE MANDATE: Every `.html` page MUST HAVE explicit dark theme background styling (`<body class="bg-slate-950 text-slate-100 min-h-screen">`) and complete, non-truncated body content.
-    - ZERO-TRUNCATION GUARANTEE: ALWAYS write complete closing `</body></html>` tags and full JavaScript event listeners.
-    - MANDATORY HEAD INCLUDES: Always include Tailwind CSS, Lucide Icons, and Google Fonts (Inter, Outfit, Plus Jakarta Sans) in `<head>`:
-      ```html
-      <script src="https://cdn.tailwindcss.com"></script>
-      <script src="https://unpkg.com/lucide@latest"></script>
-      <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Outfit:wght@400;600;700;800&family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
-      <style>body {{ font-family: 'Inter', sans-serif; }} h1, h2, h3 {{ font-family: 'Outfit', sans-serif; }}</style>
-      ```
-    - MANDATORY LUCIDE INITIALIZATION: At the end of `<body>`, ALWAYS include `<script>lucide.createIcons();</script>` so icon tags like `<i data-lucide="zap"></i>` render cleanly!
-    - HIGH-QUALITY UN SPLASH IMAGERY: Always use real, high-res Unsplash CDN images for avatars, project previews, and hero banners.
-    - LUXURY UI DESIGN PATTERNS: Dark theme palette (`bg-slate-950 text-slate-100`), glassmorphism cards (`bg-slate-900/70 backdrop-blur-xl border border-slate-800/80 rounded-2xl shadow-2xl p-6`), glowing gradient headings (`bg-gradient-to-r from-indigo-400 via-purple-400 to-pink-400 bg-clip-text text-transparent`), and smooth micro-interactions.
-    - IF LINKING AN EXTERNAL CSS (`css/style.css`) OR JS (`js/main.js`), YOU MUST WRITE THOSE FILES IMMEDIATELY USING `file_operation(write)`!
-12. Robust Error Boundaries: Always implement comprehensive error handling, input validation, and try-catch blocks. The app must gracefully handle invalid inputs or missing data without crashing.
-13. Clean UI Grids & Layouts: Web and Desktop UI must use structured grids/flexbox for alignment, with clean padding and premium modern styling (custom CSS, glassmorphism, responsive grids).
-14. No Truncation: NEVER write ellipses ("...") or placeholders like "rest of code remains the same". Always write full, complete, and working files.
-15. Cap on Interactive Loops: Ensure that continuous loops (like game loops or polling) have explicit exit conditions or caps to prevent hanging the system.
-16. Interactive Features: Ensure every button, toggle, or control is fully implemented and hooked up to real logic.
+### 3. DOMAIN-SPECIFIC EXCELLENCE GUIDELINES (APPLIED CONTEXTUALLY)
+- **When building Python / Backend / CLI / Algorithms**:
+  * Write idiomatic, PEP-8 compliant, type-annotated Python with docstrings, clean classes/functions, and a runnable `if __name__ == "__main__":` entry point or unit test verification block.
+- **When building Web UIs / HTML / CSS / JS**:
+  * Place primary entry files (`index.html`, etc.) directly in `{AGENT_WORKSPACE_DIR}` (unless the user requested a specific subfolder, in which case also keep `{AGENT_WORKSPACE_DIR}/index.html` updated for instant preview).
+  * Craft modern, responsive, high-contrast, accessible UI with semantic HTML5, smooth interactive JavaScript state, keyboard/mouse ergonomics, and cohesive styling (Tailwind CSS CDN `<script src="https://cdn.tailwindcss.com"></script>`, Google Fonts Inter/Outfit, and Lucide icons `<script src="https://unpkg.com/lucide@latest"></script>` with `lucide.createIcons()` when appropriate).
+  * Ensure every linked local stylesheet (`css/style.css`) or script (`js/main.js`) is actually created on disk so there are zero 404 errors.
+- **When building Next.js / React / TypeScript Applications**:
+  * Keep `app/layout.tsx` as a Server Component importing `'./globals.css'`.
+  * Add `'use client';` at the top of components that use React hooks (`useState`, `useEffect`, `useRef`, etc.) or browser event handlers (`onClick`, `onChange`, `onSubmit`).
+  * Use `next/navigation` (never deprecated `next/router`) and compatible dependency versions in `package.json`.
+- **When building Compiled / Systems Projects (Rust, Go, C/C++, Java)**:
+  * Include build configuration (`Cargo.toml`, `go.mod`, `CMakeLists.txt` / `Makefile`) and clean memory/error handling.
 
-THINK LONGER & VERIFY SKILL (DEEP QUALITY AUDIT PROTOCOL):
-Before you output your Final Answer, you MUST execute a strict quality review of all generated files:
-- STEP 1: UI & AESTHETICS AUDIT
-  - Is the app UI plain white or basic? If so, YOU MUST rewrite the CSS/HTML/Tailwind components to add vibrant gradients, Google Fonts, smooth card shadows, and hover transitions before finishing.
-- STEP 2: COMPLETENESS AUDIT
-  - Did you leave any placeholders, ellipses, or incomplete sections? If so, write full implementations.
-- STEP 3: BATCHED FILE & CONSOLE VERIFICATION
-  - Invoke `batch_verify_and_repair_files` across generated files.
-  - CALL `verify_app_browser_console` to test script links (404 checks), HTML structure, JS console syntax, and Python syntax.
-  - If any console error is found, fix it using `file_operation(patch)` BEFORE providing the Final Answer.
-
-Tools YOU MUST USE:
-1. update_todo_list - Initialize and update live step-by-step task progress and To-Do list status
-2. batch_verify_and_repair_files - Run automated batch verification and repair across written files (call after every 2-3 files)
-3. browser_open_url - Open URL in headless Chromium browser to test live app
-4. browser_get_console_errors - Get captured browser console errors and network failures
-5. browser_take_screenshot - Take a screenshot of the browser viewport (e.g. {{"name": "after_fixes"}})
-6. browser_vision_audit - Run Gemma4:26b vision model audit on screenshot for UI flaws
-7. verify_app_browser_console - Verify HTML structure, script links (404 checks), JS console errors, and Python syntax
-   Input: {{"target_dir": ""}}
-8. file_operation - READ, WRITE, LIST, or PATCH files
-   To READ a file:  {{"operation": "read", "path": "filename.py"}}
-   To WRITE a file: {{"operation": "write", "path": "filename.py", "content": "file content here"}}
-   To LIST files:   {{"operation": "list", "path": ""}}
-   To PATCH a file: {{"operation": "patch", "path": "filename.py", "content": "{{\\"target\\": \\"old code\\", \\"replacement\\": \\"new code\\"}}"}}
-9. recursive_list - List all files in a directory recursively
-10. grep_search - Search for strings in the workspace
-11. create_project - For multiple files
-   Input: dict with file paths as keys and content as values
-12. execute_terminal - Run terminal/shell commands
-   Input: {{"command": "npm install", "cwd": "/path/to/dir"}}
-13. schedule_task - Schedule a future or recurring agent task
-   Input: {{"task_name": "Check Nike shoes", "prompt": "Search the web for Nike Mind shoes availability and report the result", "interval_minutes": 60, "delay_minutes": 1}}
-
-WORKFLOW FOR CREATING NEW FILES:
-Step 1: Initialize To-Do list using `update_todo_list`
-Step 2: Generate complete code with correct indentation and newlines
-Step 3: CALL file_operation tool with operation "write" and the formatted code
-Step 4: After writing a batch of 2-3 files, invoke `batch_verify_and_repair_files` to verify and repair files
-Step 5: Update To-Do progress using `update_todo_list`
-Step 6: Confirm creation and proceed to next batch
-
-WORKFLOW FOR FIXING EXISTING FILES:
-Step 1: CALL file_operation with operation "read" to read the existing file
-Step 2: Analyze the code and identify the errors/issues and exact target code snippet
-Step 3: For localized fixes, CALL file_operation with operation "patch" providing target and replacement in JSON content. For complete rewrites, use operation "write"
-Step 4: Confirm the fix was applied
-Step 5: Update To-Do list status using `update_todo_list`
-
-Example for reading and fixing a file:
-Action: file_operation
-Action Input: {{"operation": "read", "path": "app.py"}}
-(After reading, fix errors and write back)
-Action: file_operation
-Action Input: {{"operation": "write", "path": "app.py", "content": "def calculate_factorial(n):\\n    if n == 0 or n == 1:\\n        return 1\\n    return n * calculate_factorial(n - 1)\\n\\nif __name__ == '__main__':\\n    print(calculate_factorial(5))"}}
-
-Ensure code is formatted with proper indentation and correct syntax for the target programming language."""
+### 4. FINAL RESPONSE FORMAT
+Conclude your Final Answer with a concise, well-structured **Engineering Summary**:
+- **Overview & Architecture**: What was built or fixed and key design decisions.
+- **Files Created / Modified**: Relative paths and role of each file.
+- **Verification Results**: Summary of syntax, build, or runtime checks passed.
+- **How to Run / Use**: Exact command or usage instructions."""
 
         super().__init__(
             name="Code Agent",
@@ -1475,44 +1355,15 @@ Ensure code is formatted with proper indentation and correct syntax for the targ
         )
 
     def generate_app(self, requirements: str, chat_history: Optional[List[BaseMessage]] = None, callbacks: Optional[List[BaseCallbackHandler]] = None) -> Dict[str, Any]:
-        """Generate a complete application based on requirements"""
-        req_lower = requirements.lower()
-        is_nextjs = any(kw in req_lower for kw in ["next", "next.js", "nextjs", "react app", "app router", "component"])
-        
-        extra_instructions = ""
-        if is_nextjs:
-            extra_instructions = """
-FOR NEXT.JS APP ROUTER APPLICATIONS:
-1. Use `create_project` to write ALL modular files at once:
-   - `package.json` (with next, react, lucide-react, clsx, tailwind-merge, framer-motion)
-   - `tsconfig.json` (with `@/*` path alias)
-   - `tailwind.config.js` and `app/globals.css`
-   - `lib/utils.ts` (with `cn` helper function using `clsx` and `tailwind-merge`)
-   - `app/layout.tsx` (Root Server Component with `<html><body>`, CSS import, fonts)
-   - `app/page.tsx` (Main page)
-   - `components/` (Interactive stateful components with `'use client';`)
-2. Ensure zero missing imports or unhandled hooks."""
-        else:
-            extra_instructions = """
-FOR HTML/JS SINGLE-PAGE APPLICATIONS:
-1. Write a complete, standalone `index.html` with:
-   - Tailwind CSS CDN, Lucide Icons, Google Fonts (Inter, Outfit) in `<head>`
-   - Modern glassmorphism UI card styling (`bg-slate-950`, `backdrop-blur-xl`)
-   - `<script>lucide.createIcons();</script>` before `</body>`
-   - Complete interactive JS state, local storage persistence, and zero truncation
-2. If linking external CSS (`css/style.css`) or JS (`js/main.js`), write those files using `file_operation(write)` immediately."""
-
-        task = f"""Generate a complete, production-grade application with the following requirements:
+        """Generate a complete software solution, project, or application generically based on requirements."""
+        task = f"""Design, implement, and verify a complete, production-grade solution for the following requirements:
 
 {requirements}
 
-{extra_instructions}
-
-Provide:
-1. Modular project structure
-2. Complete, non-truncated code for all files (using `create_project` or `file_operation(write)`)
-3. Dependencies and package configuration
-4. Setup, build, and run instructions"""
+Execution Mandate:
+1. Select the optimal language, architecture, and modular file layout for these requirements.
+2. Initialize `update_todo_list`, write 100% complete files using `create_project` or `file_operation(write)` (with zero placeholders), and verify all files with `batch_verify_and_repair_files` / `verify_project_build`.
+3. Provide clear setup, build, and execution instructions in your final summary."""
 
         result = self.process(task, chat_history=chat_history, callbacks=callbacks)
 
@@ -1524,22 +1375,16 @@ Provide:
         }
 
     def fix_file(self, filepath: str, analysis_report: str, context: Optional[Dict[str, Any]] = None, chat_history: Optional[List[BaseMessage]] = None, callbacks: Optional[List[BaseCallbackHandler]] = None) -> Dict[str, Any]:
-        """Fix errors in an existing file based on analysis report"""
-        task = f"""You need to fix errors in the file: {filepath}
-
-Here is the analysis report describing the issues found:
+        """Fix errors or refactor an existing file based on an analysis or diagnostic report."""
+        task = f"""Fix all issues in the file `{filepath}` based on the following diagnostic report:
 
 {analysis_report}
 
-CRITICAL DESIGN RULE: When applying fixes, YOU MUST PRESERVE AND ENHANCE BEAUTIFUL STYLING (Tailwind CSS CDN, Google Fonts, dark glassmorphic cards, gradients, drop shadows, hover effects). NEVER downgrade a styled web page to plain unstyled HTML.
-
-IMPORTANT STEPS:
-1. First, READ the file using: Action: file_operation with {{"operation": "read", "path": "{filepath}"}}
-2. Then analyze the code and apply ALL the fixes from the analysis report while maintaining beautiful modern UI styling
-3. For localized fixes, use: Action: file_operation with {{"operation": "patch", "path": "{filepath}", "content": "{{\\"target\\": \\"...old code...\\", \\"replacement\\": \\"...new code...\\"}}"}} (use operation "write" only if replacing the full file)
-4. Confirm what was fixed
-
-Do NOT skip any step. You MUST read the file first, then apply localized patch or write operation."""
+Execution Steps:
+1. Read `{filepath}` using `file_operation(operation="read", path="{filepath}")`.
+2. Analyze the root cause of each reported issue while preserving all existing working functionality, architecture, and styling.
+3. Apply the fix using `edit_file` (or `file_operation` with `patch` / `write`).
+4. Verify the repaired file using `batch_verify_and_repair_files` (`{{"files": ["{filepath}"]}}`) and confirm what was fixed."""
 
         result = self.process(task, context=context, chat_history=chat_history, callbacks=callbacks)
 
@@ -1603,57 +1448,35 @@ Include:
 
 
 class AnalysisAgent(BaseSpecializedAgent):
-    """Agent specialized in code analysis, diagnostics, fixing, and user-requested modifications"""
+    """Agent specialized in deep multi-file codebase analysis, diagnostics, fixing, and user-requested modifications"""
     def __init__(self, model_name: str = DEFAULT_MAIN_MODEL, ollama_base_url: str = "http://localhost:11434"):
-        system_prompt = f"""You are an Expert Analysis, Diagnostics & Fix Agent — the MOST POWERFUL agent in this system.
-You specialize in deep code diagnostics, real browser console verification, Gemma4:26b vision-powered UI audit,
-error remediation, AND directly applying fixes and user-requested changes to the codebase.
+        system_prompt = f"""You are the Lead Codebase Architect & Diagnostic Specialist — the master analysis brain of this multi-agent system.
+You specialize in deep multi-file codebase diagnostics, symbol tracing, dependency graphs, real browser console verification, and formulating surgical fix plans.
 
 {get_workspace_instructions()}
 
-Your capabilities:
-- **Direct File Modification**: Read, write, and patch files using `file_operation` with operations 'read', 'write', 'patch'. You can DIRECTLY fix code, not just suggest fixes.
-- **Terminal Command Execution**: Run validation commands using `execute_terminal` (e.g. `python -m py_compile file.py`, `pytest`, `npm run build`, `eslint`).
-- **Code Execution**: Execute Python code for testing using `execute_code`.
-- **Real Browser Testing**: Open the app in a real Chromium browser using `browser_open_url` to capture actual JS console errors, network failures, and runtime exceptions.
-- **Vision UI Audit**: Use `browser_vision_audit` to take a screenshot and analyze UI quality, layout, and styling with Gemma4:26b vision model.
-- **Console Error Analysis**: Use `browser_get_console_errors` to get detailed console error reports with file locations and line numbers.
-- **Screenshot Capture**: Use `browser_take_screenshot` to document the current state of the app.
-- **Static File Analysis**: Use `verify_app_browser_console` as a fallback for static file checks (HTML links, JS syntax, Python compile).
+Your analytical capabilities:
+- **Codebase Exploration**: Scan directory trees with `recursive_list`, grep patterns across files with `grep_search`, and search symbol definitions/references with `search_symbols`.
+- **File Outlining & Inspection**: Inspect file outlines with `get_file_outline` and read full content with `file_operation(read)`.
+- **Semantic Code Search**: Search codebase concepts using Hybrid RAG with `query_codebase`.
+- **Direct File Modification**: Apply surgical edits using `file_operation(patch)`, fuzzy search/replace with `edit_file`, or rewrite files with `file_operation(write)`.
+- **Terminal Command Validation**: Run validation commands using `execute_terminal` (e.g. `python -m py_compile`, `pytest`, `npm test`).
+- **Real Browser Testing**: Open running apps in Chromium via `browser_open_url`, capture runtime exceptions with `browser_get_console_errors`, and audit UI with `browser_vision_audit`.
+- **Syntax Repair**: Automatically scan and repair syntax issues across files using `batch_verify_and_repair_files`.
 
-CRITICAL WORKFLOW FOR ANALYZING AND FIXING:
-1. READ the target file(s) using `file_operation` with operation "read".
-2. ANALYZE the code for bugs, errors, or understand what changes the user wants.
-3. For browser-based apps, use `browser_open_url` to test in a real browser and `browser_get_console_errors` for console errors.
-4. Use `browser_vision_audit` to visually inspect the UI for layout bugs.
-5. APPLY FIXES DIRECTLY using `file_operation` with operation "patch" (for targeted edits) or "write" (for full file rewrites).
-6. VALIDATE the fix by running `execute_terminal` with validation commands (e.g. `python -m py_compile`, `pytest`).
-7. If validation fails, iterate: read the error, fix again, re-validate.
+SYSTEMATIC WORKFLOW FOR CODEBASE ANALYSIS:
+1. **DISCOVER**: First, explore the project layout using `recursive_list` and locate candidate files relevant to the problem using `grep_search` or `search_symbols`.
+2. **READ & TRACE**: Read the actual code of relevant files. Trace imports, function calls, state variables, or CSS classes to understand how modules interact.
+3. **DIAGNOSE**: Identify the exact root cause: logic bug, missing import, broken selector, unhandled promise, mismatched API contract, or layout flaw.
+4. **CROSS-FILE IMPACT**: Determine all secondary files that will be affected if a change is made.
+5. **FIX & BLUEPRINT**: Formulate or directly apply the fix using `file_operation(patch)` or `edit_file`.
 
-HANDLING USER CHANGE REQUESTS:
-When the user asks to CHANGE, MODIFY, or IMPROVE something (not just fix bugs):
-1. Read the relevant files to understand the current state.
-2. Identify ALL files that need to be modified for the requested change.
-3. Apply changes across ALL relevant files using `file_operation(patch)` for targeted edits.
-4. Validate that the changes don't break anything.
-5. Report what was changed and why.
-
-MULTI-FILE ANALYSIS:
-When analyzing a project, scan ALL related files (not just the one mentioned):
-- Check import chains and cross-file dependencies
-- Verify that changes in one file don't break references in other files
-- Use `file_operation(list)` to discover project structure
-
-CRITICAL UI DESIGN PRESERVATION RULE:
-When analyzing or fixing HTML/CSS/JS files, NEVER remove styling, CSS rules, Tailwind CDN, Google Fonts, or visual components. ALWAYS preserve and enhance high-end modern design, glassmorphism cards, vibrant color themes, and hover effects.
-
-Provide a structured report stating:
-- ERRORS FOUND: List each error with exact file path, line number, and error type
-- CHANGES APPLIED: List each file modified with what was changed
-- VISUAL DEFECTS: List any UI/layout issues found by the vision audit
-- VALIDATION: Results of any validation commands run
-
-Always provide precise, zero-ambiguity, actionable diagnostics and DIRECTLY APPLY fixes."""
+When asked to diagnose or blueprint a fix, format your output clearly:
+- **ROOT CAUSE**: Clear explanation of why the defect exists.
+- **AFFECTED FILES**: List each file path with its role in the issue.
+- **CROSS-FILE IMPACT**: Dependencies, imports, or styles that must be kept in sync.
+- **RECOMMENDED FIXES**: Concrete, line-by-line instructions or patches.
+- **WALKTHROUGH SUMMARY**: A clear summary of findings and fixes."""
 
         super().__init__(
             name="Analysis Agent",

@@ -6,6 +6,7 @@ import { OllamaService } from '@/services/ollama';
 import { SiriFluidOrb } from './SiriFluidOrb';
 import { cn } from '@/lib/utils';
 import { playSiriActivationSound } from '@/lib/siriAudio';
+import { useAgentExecution, formatWorkerDisplayName } from '@/context/AgentExecutionContext';
 
 interface Message {
   id: string;
@@ -46,11 +47,15 @@ const AGENTS = {
 };
 
 export const IdeaPlayground: React.FC = () => {
+  const { upsertLocalRun, removeLocalRun, registerStopHandler } = useAgentExecution();
   const [activeAgent, setActiveAgent] = useState<'research' | 'business'>('research');
   const [systemPrompt, setSystemPrompt] = useState(AGENTS.research.systemPrompt);
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
+  const [activePromptText, setActivePromptText] = useState('');
+  const [activeToolName, setActiveToolName] = useState<string | null>(null);
+  const [runStartTime, setRunStartTime] = useState<number>(Date.now());
   const [temperature, setTemperature] = useState(0.7);
   const [expandedThinking, setExpandedThinking] = useState<Record<string, boolean>>({});
   
@@ -67,13 +72,6 @@ export const IdeaPlayground: React.FC = () => {
     setExpandedThinking(prev => ({ ...prev, [id]: !prev[id] }));
   };
 
-  const handleAgentChange = (agentId: 'research' | 'business') => {
-    setActiveAgent(agentId);
-    setSystemPrompt(AGENTS[agentId].systemPrompt);
-    setMessages([]);
-    handleStop();
-  };
-
   const handleStop = useCallback(async () => {
     if (abortControllerRef.current) {
       try {
@@ -81,6 +79,8 @@ export const IdeaPlayground: React.FC = () => {
       } catch (e) {}
       abortControllerRef.current = null;
     }
+    removeLocalRun('idea-playground-active');
+    setActiveToolName(null);
     
     // Explicit backend stop trigger
     try {
@@ -90,13 +90,49 @@ export const IdeaPlayground: React.FC = () => {
     }
     
     setIsGenerating(false);
-  }, []);
+  }, [removeLocalRun]);
+
+  // Sync IdeaPlayground active agent state with global AgentExecutionContext
+  useEffect(() => {
+    const key = 'idea-playground-active';
+    if (isGenerating) {
+      upsertLocalRun({
+        id: key,
+        source: 'idea-playground',
+        sourceLabel: 'Idea Playground',
+        targetTab: 'idea-playground',
+        workerId: activeAgent,
+        workerName: AGENTS[activeAgent]?.name || formatWorkerDisplayName(activeAgent),
+        routingReason: `Interactive AI Studio Playground session (${AGENTS[activeAgent]?.name})`,
+        confidence: 1.0,
+        activeTool: activeToolName,
+        step: activeToolName ? 'using_tool' : 'streaming',
+        prompt: activePromptText,
+        model: 'gemma4:31b-cloud',
+        startedAt: runStartTime,
+        canStop: true,
+      });
+      registerStopHandler(key, handleStop);
+    } else {
+      removeLocalRun(key);
+    }
+  }, [isGenerating, activeAgent, activeToolName, activePromptText, runStartTime, upsertLocalRun, removeLocalRun, registerStopHandler, handleStop]);
+
+  const handleAgentChange = (agentId: 'research' | 'business') => {
+    setActiveAgent(agentId);
+    setSystemPrompt(AGENTS[agentId].systemPrompt);
+    setMessages([]);
+    handleStop();
+  };
 
   const handleSend = async (overrideText?: string) => {
     const textToSend = overrideText || inputText;
     if (!textToSend.trim()) return;
 
     setInputText('');
+    setActivePromptText(textToSend);
+    setRunStartTime(Date.now());
+    setActiveToolName(null);
     try {
       playSiriActivationSound();
     } catch (e) {}
@@ -126,6 +162,7 @@ export const IdeaPlayground: React.FC = () => {
     // High-performance streaming buffers
     let pendingContent = '';
     let pendingThinking = '';
+    let fullContentSnapshot = '';
     let isScheduled = false;
 
     const flushUpdates = () => {
@@ -133,7 +170,7 @@ export const IdeaPlayground: React.FC = () => {
         if (msg.id === agentMessageId) {
           return {
             ...msg,
-            content: msg.content + pendingContent,
+            content: fullContentSnapshot || (msg.content + pendingContent),
             thinking: (msg.thinking || '') + pendingThinking,
           };
         }
@@ -158,33 +195,49 @@ export const IdeaPlayground: React.FC = () => {
           if (event.type === 'token') {
             pendingContent += (event.content || '');
             scheduleFlush();
+          } else if (event.type === 'response') {
+            if (event.content) {
+              fullContentSnapshot = event.content;
+            } else if (event.token) {
+              pendingContent += event.token;
+            }
+            scheduleFlush();
+            if (event.done) {
+              flushUpdates();
+              setActiveToolName(null);
+              setIsGenerating(false);
+            }
           } else if (event.type === 'thinking_stream' || event.type === 'thinking') {
             pendingThinking += (event.content || '');
             scheduleFlush();
           } else if (event.type === 'tool_start') {
             flushUpdates();
+            const tName = event.tool || event.content || 'Tool Execution';
+            setActiveToolName(tName);
             setMessages(prev => prev.map(msg => 
               msg.id === agentMessageId 
                 ? { 
                     ...msg, 
-                    tools: [...(msg.tools || []), { name: event.content || 'Tool Execution', result: 'Running...' }]
+                    tools: [...(msg.tools || []), { name: tName, result: 'Running...' }]
                   }
                 : msg
             ));
-          } else if (event.type === 'tool_result') {
+          } else if (event.type === 'tool_result' || event.type === 'tool_end') {
             flushUpdates();
+            setActiveToolName(null);
             setMessages(prev => prev.map(msg => {
               if (msg.id === agentMessageId && msg.tools) {
                 const tools = [...msg.tools];
                 if (tools.length > 0) {
-                  tools[tools.length - 1].result = event.content || 'Completed';
+                  tools[tools.length - 1].result = event.output || event.content || 'Completed';
                 }
                 return { ...msg, tools };
               }
               return msg;
             }));
-          } else if (event.type === 'done') {
+          } else if (event.type === 'done' || event.type === 'error') {
             flushUpdates();
+            setActiveToolName(null);
             setMessages(prev => prev.map(msg => {
               if (msg.id === agentMessageId && !msg.content.trim() && msg.thinking?.trim()) {
                 return { ...msg, content: msg.thinking };
@@ -197,14 +250,16 @@ export const IdeaPlayground: React.FC = () => {
         (err) => {
           console.error("Stream error:", err);
           flushUpdates();
+          setActiveToolName(null);
           setIsGenerating(false);
         },
-        { direct_agent: activeAgent, system_prompt: systemPrompt, temperature }
+        { direct_agent: activeAgent, system_prompt: systemPrompt, temperature, source: 'idea-playground' }
       );
       
       abortControllerRef.current = controller;
     } catch (error) {
       console.error("Error starting direct agent stream:", error);
+      setActiveToolName(null);
       setIsGenerating(false);
     }
   };

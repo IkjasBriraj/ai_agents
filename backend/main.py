@@ -81,9 +81,18 @@ OLLAMA_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434").rstrip(
 @app.get("/health")
 async def application_health():
     """Report readiness of the local services required by the UI."""
+    from database.mongo_db import check_mongo_connection
+    mongo_diag = await check_mongo_connection()
+
     components: Dict[str, Dict[str, Any]] = {
         "api": {"status": "healthy"},
         "database": {"status": "healthy"},
+        "mongodb": {
+            "status": "healthy" if mongo_diag.get("connected") else "disconnected",
+            "url": mongo_diag.get("url"),
+            "latency_ms": mongo_diag.get("latency_ms"),
+            "message": mongo_diag.get("message") or ("Connected" if mongo_diag.get("connected") else "Offline/Standby")
+        },
         "scheduler": {"status": "unknown"},
         "ollama": {"status": "unknown", "url": OLLAMA_URL},
     }
@@ -136,7 +145,7 @@ class Agent(BaseModel):
     persona: str
     system_prompt: str
     tools: List[str] = []
-    base_model: str = "granite4.1:8b"
+    base_model: str = DEFAULT_MAIN_MODEL
     training_data: List[Dict[str, str]] = []
 
 class AgentPerformance(BaseModel):
@@ -427,6 +436,12 @@ multi_agent_router = create_multi_agent_router(
     ollama_base_url=OLLAMA_URL
 )
 app.include_router(multi_agent_router, prefix="/api/multi-agent")
+
+# Mount Authentication & MongoDB Database routers
+from api.auth import auth_router, database_router
+app.include_router(auth_router)
+app.include_router(database_router)
+
 
 # Mount static route for browser screenshots and generated documents
 from agents.config import SCREENSHOTS_DIR, DOCUMENTS_DIR

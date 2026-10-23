@@ -1,21 +1,23 @@
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@300;400;500;600;700&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap');
 
 @import "tailwindcss";
 @plugin "tailwindcss-animate";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
-  --color-ibm-blue: #0f62fe;
-  --color-ibm-dark: #161616;
-  --color-ibm-gray-10: #f4f4f4;
-  --color-ibm-gray-20: #e0e0e0;
-  --color-ibm-gray-80: #393939;
-  --color-ibm-gray-90: #262626;
-  --color-ibm-gray-100: #161616;
+  --color-ibm-blue: #2563eb;
+  --color-ibm-dark: #090d16;
+  --color-ibm-gray-10: #f1f5f9;
+  --color-ibm-gray-20: #e2e8f0;
+  --color-ibm-gray-80: #1e293b;
+  --color-ibm-gray-90: #0f172a;
+  --color-ibm-gray-100: #090d16;
   
-  --font-sans: "IBM Plex Sans", Inter, system-ui, sans-serif;
-  --font-mono: "IBM Plex Mono", monospace;
+  --font-sans: "Inter", "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
   
-  --radius-none: 0rem;
+  --radius-none: 0.5rem;
 
   --color-background: hsl(var(--background));
   --color-foreground: hsl(var(--foreground));
@@ -39,49 +41,54 @@
 }
 
 @layer base {
+  /* Crisp Enterprise Light Theme */
   :root {
-    --background: 272 40% 98%; /* Beautiful soft lavender/purple background */
-    --foreground: 272 60% 15%; /* Deep purple text */
+    --background: 210 40% 98%;
+    --foreground: 222 47% 11%;
     --card: 0 0% 100%;
-    --card-foreground: 272 60% 15%;
+    --card-foreground: 222 47% 11%;
     --popover: 0 0% 100%;
-    --popover-foreground: 272 60% 15%;
-    --primary: 272 70% 50%; /* Vibrant purple primary */
+    --popover-foreground: 222 47% 11%;
+    --primary: 221 83% 53%;
     --primary-foreground: 0 0% 100%;
-    --secondary: 142 50% 96%; /* Soft pastel mint green background */
-    --secondary-foreground: 142 85% 18%; /* Deep forest/emerald green text */
-    --muted: 272 25% 94%; /* Soft muted lavender */
-    --muted-foreground: 272 15% 45%;
-    --accent: 142 70% 45%; /* High-tech glowing green/emerald accent */
+    --secondary: 210 40% 94%;
+    --secondary-foreground: 222 47% 15%;
+    --muted: 210 35% 93%;
+    --muted-foreground: 215 16% 42%;
+    --accent: 199 89% 42%;
     --accent-foreground: 0 0% 100%;
-    --destructive: 0 84.2% 60.2%;
+    --destructive: 0 84% 60%;
     --destructive-foreground: 210 40% 98%;
-    --border: 272 20% 88%; /* Lavender borders */
-    --input: 272 20% 88%;
-    --ring: 142 70% 45%;
-    --radius: 0rem; /* IBM Carbon style is sharp */
+    --border: 214 32% 86%;
+    --input: 214 32% 86%;
+    --ring: 221 83% 53%;
+    --radius: 0.75rem;
+    color-scheme: light;
   }
 
+  /* Enterprise Dark Studio Theme */
   .dark {
-    --background: 0 0% 8.6%;
-    --foreground: 210 40% 98%;
-    --card: 0 0% 10.2%;
-    --card-foreground: 210 40% 98%;
-    --popover: 0 0% 10.2%;
-    --popover-foreground: 210 40% 98%;
-    --primary: 217.2 91.2% 59.8%;
-    --primary-foreground: 222.2 47.4% 11.2%;
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
-    --destructive: 0 62.8% 30.6%;
+    --background: 224 45% 6%;
+    --foreground: 210 40% 96%;
+    --card: 224 40% 9%;
+    --card-foreground: 210 40% 96%;
+    --popover: 224 42% 8%;
+    --popover-foreground: 210 40% 96%;
+    --primary: 217 91% 60%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 222 35% 13%;
+    --secondary-foreground: 210 40% 94%;
+    --muted: 222 32% 13%;
+    --muted-foreground: 215 20% 65%;
+    --accent: 199 89% 48%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 72% 51%;
     --destructive-foreground: 210 40% 98%;
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 224.3 76.3% 48%;
+    --border: 220 28% 18%;
+    --input: 220 28% 18%;
+    --ring: 217 91% 60%;
+    --radius: 0.75rem;
+    color-scheme: dark;
   }
 }
 
@@ -89,25 +96,50 @@
   * {
     @apply border-border;
   }
+  html {
+    font-size: 15px;
+  }
   body {
-    @apply bg-background text-foreground font-sans;
-    font-size: 1.125rem; /* 18px base for seniors */
-    line-height: 1.6;
+    @apply bg-background text-foreground font-sans antialiased transition-colors duration-300 selection:bg-primary/30 selection:text-primary-foreground;
+    font-size: 0.9375rem;
+    line-height: 1.55;
+    background-image: 
+      radial-gradient(at 0% 0%, rgba(59, 130, 246, 0.07) 0px, transparent 50%),
+      radial-gradient(at 100% 0%, rgba(139, 92, 246, 0.07) 0px, transparent 50%),
+      radial-gradient(at 50% 100%, rgba(16, 185, 129, 0.04) 0px, transparent 50%);
+    background-attachment: fixed;
   }
   h1, h2, h3, h4, h5, h6 {
     @apply font-semibold tracking-tight;
   }
 }
 
-/* Custom IBM-inspired utilities */
+/* Refined Enterprise Glass & Surface Utilities */
 .carbon-border {
-  border: 1px solid var(--color-ibm-gray-80);
+  border: 1px solid hsl(var(--border));
+  border-radius: 0.75rem;
 }
 
 .carbon-card {
-  @apply bg-card p-6 border border-border transition-all duration-200 hover:border-ibm-blue;
+  @apply bg-card/90 backdrop-blur-xl p-6 border border-border/80 rounded-xl shadow-md transition-all duration-200 hover:border-primary/40;
 }
 
 .latency-badge {
-  @apply px-2 py-0.5 text-xs font-mono font-medium rounded-none;
+  @apply px-2 py-0.5 text-xs font-mono font-medium rounded-md;
+}
+
+/* Custom sleek scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.35);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(59, 130, 246, 0.6);
 }

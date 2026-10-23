@@ -3,7 +3,7 @@ from config import DEFAULT_MAIN_MODEL
 
 def main():
     print("Starting workspace indexing...")
-    embedder = OllamaEmbeddings(model_name=DEFAULT_MAIN_MODEL)
+    embedder = OllamaEmbeddings()
     store = LocalVectorStore()
     index_workspace(embedder, store)
     print("Indexing completed successfully.")

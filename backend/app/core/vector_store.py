@@ -5,25 +5,92 @@ import httpx
 from typing import List, Dict, Any, Tuple
 from .config import AGENT_WORKSPACE_DIR, is_allowed_extension
 
+import re
+import math
+import hashlib
+import logging
+
+logger = logging.getLogger(__name__)
+
+def _local_hash_embedding(text: str, dim: int = 128) -> List[float]:
+    """Deterministic local semantic hash embedding fallback when Ollama embeddings are unavailable."""
+    vec = [0.0] * dim
+    words = re.findall(r'\w+', text.lower())
+    for w in words:
+        h = int(hashlib.md5(w.encode('utf-8')).hexdigest(), 16) % dim
+        vec[h] += 1.0
+    norm = math.sqrt(sum(x * x for x in vec))
+    if norm > 0:
+        vec = [x / norm for x in vec]
+    return vec
+
 class OllamaEmbeddings:
-    """Utility to get embeddings from local Ollama server."""
-    def __init__(self, model_name: str = "granite4.1:8b", base_url: str = "http://localhost:11434"):
-        self.model_name = model_name
+    """Utility to get embeddings from local Ollama server with deterministic offline fallback."""
+    def __init__(self, model_name: Optional[str] = None, base_url: str = "http://localhost:11434"):
+        env_embed_model = os.environ.get("OLLAMA_EMBED_MODEL", "").strip() or os.environ.get("EMBED_MODEL", "").strip()
+        self.model_name = model_name or env_embed_model or None
         self.base_url = base_url
+        self._checked_model = False
+        self._active_model: Optional[str] = None
+
+    def _resolve_model(self) -> Optional[str]:
+        """Resolve a dedicated embedding model, avoiding loading heavy LLMs in the background."""
+        if self._checked_model:
+            return self._active_model
+
+        self._checked_model = True
+
+        if self.model_name:
+            self._active_model = self.model_name
+            return self._active_model
+
+        try:
+            resp = httpx.get(f"{self.base_url}/api/tags", timeout=1.5)
+            if resp.status_code == 200:
+                models = [m.get("name", "") for m in resp.json().get("models", [])]
+                embed_keywords = ["embed", "minilm", "bge-", "arctic-embed", "mxbai"]
+                for m in models:
+                    m_lower = m.lower()
+                    if any(kw in m_lower for kw in embed_keywords):
+                        self._active_model = m
+                        return self._active_model
+        except Exception:
+            pass
+
+        self._active_model = None
+        return None
 
     def embed_text(self, text: str) -> List[float]:
         """Get embedding for a piece of text."""
-        try:
-            response = httpx.post(
-                f"{self.base_url}/api/embeddings",
-                json={"model": self.model_name, "prompt": text},
-                timeout=30.0
-            )
-            response.raise_for_status()
-            return response.json().get("embedding", [])
-        except Exception as e:
-            print(f"Error getting embedding: {e}")
-            return []
+        if not text or not text.strip():
+            return [0.0] * 128
+
+        active_model = self._resolve_model()
+        if active_model:
+            try:
+                resp = httpx.post(
+                    f"{self.base_url}/api/embed",
+                    json={"model": active_model, "input": text},
+                    timeout=5.0
+                )
+                if resp.status_code == 200:
+                    embs = resp.json().get("embeddings", [])
+                    if embs and len(embs) > 0 and len(embs[0]) > 0:
+                        return embs[0]
+
+                response = httpx.post(
+                    f"{self.base_url}/api/embeddings",
+                    json={"model": active_model, "prompt": text},
+                    timeout=5.0
+                )
+                if response.status_code == 200:
+                    emb = response.json().get("embedding", [])
+                    if emb:
+                        return emb
+            except Exception as e:
+                logger.debug(f"Error getting embedding from Ollama: {e}")
+
+        return _local_hash_embedding(text)
 
 class LocalVectorStore:
     """A simple, file-based vector store using numpy for cosine similarity."""
@@ -66,6 +133,8 @@ class LocalVectorStore:
 
         for item in self.data:
             doc_vec = np.array(item["embedding"])
+            if len(doc_vec) != len(query_vec):
+                continue  # dimension mismatch protection
             # Cosine Similarity: (A . B) / (||A|| * ||B||)
             norm_q = np.linalg.norm(query_vec)
             norm_d = np.linalg.norm(doc_vec)

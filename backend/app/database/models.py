@@ -99,7 +99,7 @@ class AgentModel(Base):
     name = Column(String, nullable=False)
     persona = Column(Text, nullable=False)
     system_prompt = Column(Text, nullable=False)
-    base_model = Column(String, default="granite4.1:8b")
+    base_model = Column(String, default="gemma4:31b-cloud")
     ollama_base_url = Column(String, default="http://localhost:11434")
     
     # Custom & system tool names, and registered MCP server IDs

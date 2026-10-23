@@ -36,10 +36,10 @@ class PersonalMemoryManager:
         self.vector_store = LocalVectorStore(storage_path)
         self.embedder = OllamaEmbeddings()
 
-    def _notify_user_saving(self, memory_data: Dict[str, Any]):
+    def _notify_user_saving(self, memory_data: Dict[str, Any], context: Optional[Dict[str, Any]] = None):
         """Stream an interactive UI notification when a memory is being saved so user sees it in real-time."""
         try:
-            ctx = current_agent_context.get()
+            ctx = context or current_agent_context.get()
             if ctx and "queue" in ctx and "loop" in ctx:
                 queue = ctx["queue"]
                 loop = ctx["loop"]
@@ -73,9 +73,10 @@ class PersonalMemoryManager:
         category: str = "preference",
         title: str = "",
         tags: Optional[List[str]] = None,
-        broadcast: bool = True
+        broadcast: bool = True,
+        context: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        """Save a new memory to database and vector store with user notification."""
+        """Save a new memory to database and vector store with user notification and deduplication."""
         content = content.strip()
         if not content:
             return {"error": "Memory content cannot be empty."}
@@ -96,6 +97,24 @@ class PersonalMemoryManager:
         if SessionLocal and PersonalMemoryModel:
             db = SessionLocal()
             try:
+                # Deduplication check: check if memory with same content already exists
+                existing = db.query(PersonalMemoryModel).filter(
+                    PersonalMemoryModel.content.ilike(content)
+                ).first()
+                if existing:
+                    memory_dict = {
+                        "id": existing.id,
+                        "title": existing.title,
+                        "content": existing.content,
+                        "category": existing.category,
+                        "tags": existing.tags or [],
+                        "created_at": existing.created_at.isoformat() if existing.created_at else created_at_str,
+                        "is_duplicate": True
+                    }
+                    if broadcast:
+                        self._notify_user_saving(memory_dict, context=context)
+                    return memory_dict
+
                 mem = PersonalMemoryModel(
                     category=category,
                     title=title,
@@ -141,7 +160,7 @@ class PersonalMemoryManager:
         }
 
         if broadcast:
-            self._notify_user_saving(memory_dict)
+            self._notify_user_saving(memory_dict, context=context)
 
         return memory_dict
 
@@ -228,12 +247,71 @@ class PersonalMemoryManager:
                     "content": m.content,
                     "category": m.category,
                     "tags": m.tags or [],
-                    "created_at": m.created_at.isoformat() if m.created_at else ""
+                    "created_at": m.created_at.isoformat() if m.created_at else "",
+                    "updated_at": m.updated_at.isoformat() if m.updated_at else ""
                 }
                 for m in mems
             ]
         finally:
             db.close()
+
+    def update_memory(
+        self,
+        memory_id: int,
+        content: Optional[str] = None,
+        category: Optional[str] = None,
+        title: Optional[str] = None,
+        tags: Optional[List[str]] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Update an existing personal memory in SQLite and vector store."""
+        updated_dict = None
+        if SessionLocal and PersonalMemoryModel:
+            db = SessionLocal()
+            try:
+                mem = db.query(PersonalMemoryModel).filter(PersonalMemoryModel.id == memory_id).first()
+                if mem:
+                    if content is not None and content.strip():
+                        mem.content = content.strip()
+                    if category is not None and category.strip():
+                        mem.category = category.strip()
+                    if title is not None:
+                        mem.title = title.strip()
+                    if tags is not None:
+                        mem.tags = tags
+                    mem.updated_at = datetime.utcnow()
+                    db.commit()
+                    db.refresh(mem)
+                    updated_dict = {
+                        "id": mem.id,
+                        "title": mem.title,
+                        "content": mem.content,
+                        "category": mem.category,
+                        "tags": mem.tags or [],
+                        "created_at": mem.created_at.isoformat() if mem.created_at else "",
+                        "updated_at": mem.updated_at.isoformat() if mem.updated_at else ""
+                    }
+            except Exception as e:
+                db.rollback()
+                logger.error(f"Error updating memory in DB: {e}")
+            finally:
+                db.close()
+
+        # Also update vector store entry
+        if updated_dict:
+            for item in self.vector_store.data:
+                if item.get("metadata", {}).get("id") == memory_id:
+                    item["text"] = updated_dict["content"]
+                    item["metadata"]["title"] = updated_dict["title"]
+                    item["metadata"]["category"] = updated_dict["category"]
+                    item["metadata"]["tags"] = updated_dict["tags"]
+                    try:
+                        emb = self.embedder.embed_text(updated_dict["content"])
+                        item["embedding"] = emb
+                    except Exception:
+                        pass
+            self.vector_store._save_store()
+
+        return updated_dict
 
     def delete_memory(self, memory_id: int) -> bool:
         """Delete a memory by its ID."""
@@ -273,33 +351,52 @@ class PersonalMemoryManager:
         lines.append("Honor these personal preferences and context in your response.\n")
         return "\n".join(lines)
 
-    def auto_extract_and_save_if_relevant(self, user_request: str) -> Optional[Dict[str, Any]]:
+    def auto_extract_and_save_if_relevant(
+        self,
+        user_request: str,
+        context: Optional[Dict[str, Any]] = None
+    ) -> Optional[Dict[str, Any]]:
         """Inspect if the user explicitly asked to remember something and save it automatically."""
-        req_lower = user_request.lower().strip()
+        # Strip system directives / thinking mode prefixes from input if present
+        clean_req = re.sub(r'\[SYSTEM DIRECTIVE.*?\].*$', '', user_request, flags=re.DOTALL).strip()
+        req_lower = clean_req.lower().strip()
         
         remember_triggers = [
-            r'remember\s+(?:that\s+)?(.+)',
-            r'keep\s+in\s+mind\s+(?:that\s+)?(.+)',
-            r'note\s+(?:down\s+)?(?:that\s+)?(.+)',
-            r'save\s+(?:this\s+)?(?:to\s+memory|in\s+memory|to\s+your\s+journal)[:\s]*(.+)',
+            r'(?:please\s+)?remember(?:\s+to|\s+that|:)?\s+(.+)',
+            r'(?:please\s+)?keep\s+in\s+mind(?:\s+that|:)?\s+(.+)',
+            r'(?:please\s+)?don\'?t\s+forget(?:\s+to|\s+that|:)?\s+(.+)',
+            r'(?:please\s+)?note\s+(?:down\s+)?(?:that\s+|:\s*)?(.+)',
+            r'(?:please\s+)?save\s+(?:this\s+)?(?:to\s+memory|in\s+memory|to\s+(?:your\s+)?journal)[:\s]*(.+)',
+            r'(?:please\s+)?save\s+memory[:\s]*(.+)',
+            r'(?:please\s+)?store\s+(?:this\s+)?(?:in\s+memory|to\s+memory)[:\s]*(.+)',
             r'my\s+preference\s+is\s+(.+)',
             r'i\s+prefer\s+(.+)',
+            r'(?:i\s+)?always\s+(?:want\s+to\s+use|prefer|use)\s+(.+)',
+            r'my\s+(?:favorite|preferred)\s+(?:stack|language|framework|database|theme|tool|style)\s+is\s+(.+)',
+            r'our\s+(?:tech\s+stack|project\s+stack)\s+(?:is|uses)\s+(.+)',
         ]
 
         for pat in remember_triggers:
             match = re.search(pat, req_lower)
             if match:
                 extracted = match.group(1).strip()
-                # Clean punctuation
+                # Clean punctuation and pleasantries
                 extracted = re.sub(r'[\.\!\?]+$', '', extracted).strip()
-                if len(extracted) > 4:
-                    category = "preference" if ("prefer" in req_lower or "like" in req_lower or "always" in req_lower) else "personal_fact"
-                    title = "User Preference" if category == "preference" else "Personal Fact"
+                extracted = re.sub(r'(?:,\s*)?(?:please|thanks|thank you)$', '', extracted, flags=re.IGNORECASE).strip()
+                if len(extracted) > 3:
+                    is_pref = any(k in req_lower for k in ["prefer", "like", "always", "favorite", "style", "theme", "want"])
+                    is_proj = any(k in req_lower for k in ["project", "stack", "server", "port", "database", "repo", "app"])
+                    category = "project_note" if is_proj else ("preference" if is_pref else "personal_fact")
+                    words = extracted.split()
+                    title = " ".join(words[:5]) + ("..." if len(words) > 5 else "")
+                    title = title.capitalize()
                     return self.save_memory(
                         content=extracted,
                         category=category,
                         title=title,
-                        broadcast=True
+                        tags=["agent_auto_extracted"],
+                        broadcast=True,
+                        context=context
                     )
         return None
 

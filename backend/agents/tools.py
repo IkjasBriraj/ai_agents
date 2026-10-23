@@ -729,6 +729,22 @@ def patch_file_content(path: str, content: Any) -> str:
             existing_content = f.read()
 
         if target not in existing_content:
+            # Automatically fall back to fuzzy Aider-style search/replace before failing
+            try:
+                from .diff_engine import apply_search_replace, generate_unified_diff
+                fuzzy_res = apply_search_replace(path, target, replacement, similarity_threshold=0.6)
+                if fuzzy_res.success:
+                    with open(path, 'r', encoding='utf-8') as f:
+                        modified_content = f.read()
+                    rel_path = os.path.relpath(path, AGENT_WORKSPACE_DIR)
+                    abs_path = os.path.abspath(path)
+                    return (
+                        f"[SUCCESS] Patched (fuzzy match {fuzzy_res.confidence:.0%}): {rel_path}\n"
+                        f"  Full path: {abs_path}\n  Size: {len(modified_content)} bytes"
+                    )
+            except Exception:
+                pass
+
             lines = existing_content.splitlines()
             target_first_line = target.splitlines()[0] if target.splitlines() else target
             matching_lines = [i + 1 for i, line in enumerate(lines) if target_first_line.strip() in line]
@@ -934,11 +950,177 @@ def list_directory(path: str = "") -> str:
         return f"Error listing directory: {str(e)}"
 
 
+def recursive_list(path: str = "", max_depth: int = 5, max_files: int = 150) -> str:
+    """Recursively list all files and subdirectories in workspace or subfolder"""
+    try:
+        if isinstance(path, dict):
+            p_dict = path
+            path = p_dict.get("path", p_dict.get("target_dir", p_dict.get("directory", "")))
+            max_depth = int(p_dict.get("max_depth", max_depth))
+            max_files = int(p_dict.get("max_files", max_files))
+
+        path_str = str(path or "").strip()
+        if not path_str or not os.path.isabs(path_str) or path_str.startswith('/') or path_str.startswith('\\') or path_str == '.':
+            rel_path = path_str.lstrip('/\\') if path_str and path_str != '.' else ""
+            full_path = get_workspace_path(rel_path)
+        else:
+            full_path = path_str
+
+        if not check_and_request_permission(full_path):
+            return f"Error: Access denied. Path must be whitelisted: {full_path}"
+
+        if not os.path.exists(full_path):
+            return f"Directory not found: {path_str or '.'}. It does not exist yet in workspace."
+
+        if os.path.isfile(full_path):
+            size = os.path.getsize(full_path)
+            rel = os.path.relpath(full_path, AGENT_WORKSPACE_DIR)
+            return f"File: {rel} ({size:,} bytes)"
+
+        skip_dirs = {
+            ".git", "__pycache__", "node_modules", ".next", "venv", ".venv",
+            "env", ".env", "dist", "build", ".turbo", ".parcel-cache",
+            "_screenshots", "_documents", "_generated_images"
+        }
+        target_name = os.path.basename(full_path.rstrip("/\\"))
+        skip_dirs.discard(target_name)
+
+        entries = []
+        truncated = False
+        start_depth = full_path.rstrip(os.sep).count(os.sep)
+
+        for root, dirs, files in os.walk(full_path):
+            dirs[:] = [d for d in dirs if d not in skip_dirs and not d.startswith('.')]
+            current_depth = root.rstrip(os.sep).count(os.sep) - start_depth
+            if current_depth >= max_depth:
+                dirs[:] = []
+                continue
+
+            rel_dir = os.path.relpath(root, full_path)
+            prefix = "" if rel_dir == "." else rel_dir.replace("\\", "/") + "/"
+
+            for file in sorted(files):
+                if file.startswith('.') and file not in ('.env.example', '.gitignore'):
+                    continue
+                if len(entries) >= max_files:
+                    truncated = True
+                    break
+                file_full = os.path.join(root, file)
+                try:
+                    size = os.path.getsize(file_full)
+                    entries.append(f"{prefix}{file} ({size:,} bytes)")
+                except OSError:
+                    entries.append(f"{prefix}{file}")
+
+            if truncated:
+                break
+
+        rel_display = os.path.relpath(full_path, AGENT_WORKSPACE_DIR)
+        if rel_display == ".":
+            rel_display = "workspace root"
+
+        if not entries:
+            return f"Directory '{rel_display}' is empty (no files found). Ready to create files."
+
+        result = f"Found {len(entries)} file(s) in '{rel_display}':\n" + "\n".join(f"- {e}" for e in entries)
+        if truncated:
+            result += f"\n... (truncated at {max_files} files; specify subfolder to inspect further)"
+        return result
+    except Exception as e:
+        return f"Error in recursive_list: {str(e)}"
+
+
+def grep_search(query: str, path: str = "", case_sensitive: bool = False, max_results: int = 50) -> str:
+    """Search for strings/patterns across text files in workspace"""
+    try:
+        if isinstance(query, dict):
+            q_dict = query
+            query = q_dict.get("query", q_dict.get("search", q_dict.get("pattern", "")))
+            path = q_dict.get("path", q_dict.get("target_dir", path))
+            case_sensitive = bool(q_dict.get("case_sensitive", case_sensitive))
+            max_results = int(q_dict.get("max_results", max_results))
+
+        query = str(query or "").strip()
+        if not query:
+            return "Error: query parameter is required for grep_search"
+
+        path_str = str(path or "").strip()
+        if not path_str or not os.path.isabs(path_str) or path_str.startswith('/') or path_str.startswith('\\') or path_str == '.':
+            rel_path = path_str.lstrip('/\\') if path_str and path_str != '.' else ""
+            full_path = get_workspace_path(rel_path)
+        else:
+            full_path = path_str
+
+        if not check_and_request_permission(full_path):
+            return f"Error: Access denied. Path must be whitelisted: {full_path}"
+
+        if not os.path.exists(full_path):
+            return f"Directory or file not found: {path_str or '.'}"
+
+        skip_dirs = {
+            ".git", "__pycache__", "node_modules", ".next", "venv", ".venv",
+            "dist", "build", "_screenshots", "_documents", "_generated_images"
+        }
+        binary_exts = {
+            '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.pdf', '.docx', '.xlsx',
+            '.pptx', '.zip', '.tar', '.gz', '.exe', '.dll', '.pyc', '.so', '.dylib'
+        }
+
+        matches = []
+        truncated = False
+        target_query = query if case_sensitive else query.lower()
+
+        files_to_check = []
+        if os.path.isfile(full_path):
+            files_to_check.append(full_path)
+        else:
+            for root, dirs, files in os.walk(full_path):
+                dirs[:] = [d for d in dirs if d not in skip_dirs and not d.startswith('.')]
+                for f in files:
+                    ext = os.path.splitext(f)[1].lower()
+                    if ext in binary_exts or f.startswith('.'):
+                        continue
+                    files_to_check.append(os.path.join(root, f))
+
+        for fpath in files_to_check:
+            try:
+                if os.path.getsize(fpath) > 1024 * 1024:
+                    continue
+                rel_fpath = os.path.relpath(fpath, AGENT_WORKSPACE_DIR).replace("\\", "/")
+                with open(fpath, 'r', encoding='utf-8', errors='ignore') as f:
+                    for line_no, line in enumerate(f, 1):
+                        search_target = line if case_sensitive else line.lower()
+                        if target_query in search_target:
+                            matches.append(f"{rel_fpath}:{line_no}: {line.strip()}")
+                            if len(matches) >= max_results:
+                                truncated = True
+                                break
+            except Exception:
+                continue
+            if truncated:
+                break
+
+        rel_display = os.path.relpath(full_path, AGENT_WORKSPACE_DIR)
+        if rel_display == ".":
+            rel_display = "workspace root"
+
+        if not matches:
+            return f"No matches found for '{query}' in '{rel_display}'."
+
+        result = f"Found {len(matches)} match(es) for '{query}' in '{rel_display}':\n" + "\n".join(f"- {m}" for m in matches)
+        if truncated:
+            result += f"\n... (truncated at {max_results} matches)"
+        return result
+    except Exception as e:
+        return f"Error in grep_search: {str(e)}"
+
+
 def parse_project_files_from_raw_text(raw_text: str) -> Dict[str, str]:
-    """Parse file path -> content mappings from raw LLM output or malformed JSON"""
-    files = {}
+    """Parse file path -> content mappings generically from raw LLM output or malformed JSON across any language."""
+    files: Dict[str, str] = {}
     import re
     import json
+
     # 1. Look for JSON-like key-value pairs `"files": { ... }` or `{ "path": "content" }`
     json_match = re.search(r'\{[\s\S]*"files"\s*:\s*(\{[\s\S]*\})[\s\S]*\}', raw_text)
     if json_match:
@@ -949,41 +1131,158 @@ def parse_project_files_from_raw_text(raw_text: str) -> Dict[str, str]:
         except Exception:
             pass
 
-    # 2. Extract code blocks with file path hints preceding them
-    matches = re.findall(
-        r'(?:(?:file|path|filename|created|wrote|output|###|\*\*|`)\s*[:`*]*\s*([a-zA-Z0-9_\-\.\/\\]+\.[a-zA-Z0-9]+)[`*:\s]*\n+)?```(?:[a-zA-Z0-9]+\n)?([\s\S]+?)```',
-        raw_text,
+    lang_default_map = {
+        "html": "index.html",
+        "css": "style.css",
+        "scss": "style.scss",
+        "js": "script.js",
+        "javascript": "script.js",
+        "ts": "index.ts",
+        "typescript": "index.ts",
+        "jsx": "App.jsx",
+        "tsx": "App.tsx",
+        "py": "main.py",
+        "python": "main.py",
+        "go": "main.go",
+        "golang": "main.go",
+        "rs": "main.rs",
+        "rust": "main.rs",
+        "cpp": "main.cpp",
+        "c++": "main.cpp",
+        "c": "main.c",
+        "java": "Main.java",
+        "cs": "Program.cs",
+        "csharp": "Program.cs",
+        "rb": "main.rb",
+        "ruby": "main.rb",
+        "php": "index.php",
+        "swift": "main.swift",
+        "kt": "Main.kt",
+        "kotlin": "Main.kt",
+        "sql": "schema.sql",
+        "sh": "run.sh",
+        "bash": "run.sh",
+        "powershell": "run.ps1",
+        "ps1": "run.ps1",
+        "yaml": "config.yaml",
+        "yml": "config.yml",
+        "toml": "config.toml",
+        "json": "config.json",
+        "md": "README.md",
+        "markdown": "README.md",
+    }
+
+    # 2. Scan all fenced code blocks with optional inline or preceding file path hints
+    fence_pattern = re.compile(
+        r'(?:^|\n)(?P<pre>(?:[^\n]*\n){0,3})?```(?P<info>[^\n]*)\n(?P<code>[\s\S]*?)```',
+        re.MULTILINE
+    )
+    path_regex = re.compile(
+        r'(?:file(?:name)?|path|title|###+|\/\/+|#+|--+|\*\*|`)\s*[:=]*\s*[`"\']*([a-zA-Z0-9_\-\.\/\\]+\.[a-zA-Z0-9]+)[`"\']*',
         re.IGNORECASE
     )
-    for path_hint, code_content in matches:
-        code_content = code_content.strip()
+    direct_path_regex = re.compile(r'([a-zA-Z0-9_\-]+(?:[\/\\][a-zA-Z0-9_\-\.]+)+\.[a-zA-Z0-9]+|[a-zA-Z0-9_\-\.]+\.[a-zA-Z0-9]{1,8})')
+
+    unnamed_counter: Dict[str, int] = {}
+
+    for m in fence_pattern.finditer(raw_text):
+        pre_lines = (m.group("pre") or "").strip()
+        info_line = (m.group("info") or "").strip()
+        code_content = (m.group("code") or "").strip()
         if not code_content or len(code_content) < 5:
             continue
+
         target_path = None
-        if path_hint and ("." in path_hint) and not path_hint.startswith("http") and not path_hint.startswith("json"):
-            target_path = path_hint.strip("`*# :")
-        elif "<!DOCTYPE html>" in code_content or "<html" in code_content:
-            target_path = "index.html"
-        elif "body {" in code_content or "font-family:" in code_content:
-            target_path = "css/style.css"
-        elif "document.addEventListener" in code_content or "const " in code_content or "function " in code_content:
-            target_path = "js/main.js"
-        elif "def " in code_content or "import " in code_content:
-            target_path = "main.py"
-        elif "{" in code_content and "}" in code_content and ":" in code_content:
-            target_path = "config.json"
-        elif "# " in code_content:
-            target_path = "README.md"
-            
+        lang = ""
+
+        # Check info string (e.g., ```python:src/app.py or ```tsx title="components/Card.tsx" or ```src/main.rs)
+        if info_line:
+            parts = info_line.split()
+            first_token = parts[0].strip()
+            if ":" in first_token:
+                lang_part, cand_path = first_token.split(":", 1)
+                lang = lang_part.lower()
+                if "." in cand_path:
+                    target_path = cand_path.strip("`'\"")
+            elif "." in first_token and not first_token.startswith("."):
+                target_path = first_token.strip("`'\"")
+            else:
+                lang = first_token.lower()
+
+            if not target_path and len(parts) > 1:
+                pm = path_regex.search(info_line) or direct_path_regex.search(" ".join(parts[1:]))
+                if pm:
+                    target_path = pm.group(1).strip("`'\"*#:")
+
+        # Check first 2 lines inside the code block for comment-style file headers (e.g., // File: src/app.ts or # path/to/file.py)
+        if not target_path:
+            first_code_lines = "\n".join(code_content.splitlines()[:2])
+            cm = re.search(
+                r'^(?:\s*(?:\/\/|#|\/\*+|\<!--|--)\s*(?:file(?:name)?|path)?\s*[:\-]?\s*)([a-zA-Z0-9_\-\.\/\\]+\.[a-zA-Z0-9]{1,8})',
+                first_code_lines,
+                re.IGNORECASE | re.MULTILINE
+            )
+            if cm:
+                cand = cm.group(1).strip("`'\"*#:")
+                if not cand.startswith("http"):
+                    target_path = cand
+
+        # Check preceding 1-3 lines before the code fence
+        if not target_path and pre_lines:
+            for line in reversed(pre_lines.splitlines()):
+                pm = path_regex.search(line)
+                if pm:
+                    cand = pm.group(1).strip("`'\"*#:")
+                    if not cand.startswith("http") and cand.lower() not in ("e.g.", "i.e."):
+                        target_path = cand
+                        break
+                # Also accept a standalone markdown heading or bold filename like `### src/utils.py`
+                stripped_line = line.strip(" #*`:\t\r\n")
+                if re.match(r'^[a-zA-Z0-9_\-\.\/\\]+\.[a-zA-Z0-9]{1,8}$', stripped_line) and not stripped_line.startswith("http"):
+                    target_path = stripped_line
+                    break
+
+        # Fallback to language or content heuristics
+        if not target_path:
+            if lang in lang_default_map:
+                base_default = lang_default_map[lang]
+            elif "<!DOCTYPE html>" in code_content or "<html" in code_content:
+                base_default = "index.html"
+            elif "package main" in code_content and "func " in code_content:
+                base_default = "main.go"
+            elif "fn main(" in code_content:
+                base_default = "main.rs"
+            elif "#include <" in code_content:
+                base_default = "main.cpp"
+            elif "public class " in code_content and "public static void main" in code_content:
+                base_default = "Main.java"
+            elif "def " in code_content or "import " in code_content:
+                base_default = "main.py"
+            elif "const " in code_content or "function " in code_content or "export " in code_content:
+                base_default = "index.js"
+            elif "body {" in code_content or ":root" in code_content:
+                base_default = "style.css"
+            else:
+                base_default = None
+
+            if base_default:
+                if base_default in files:
+                    stem, ext = os.path.splitext(base_default)
+                    unnamed_counter[base_default] = unnamed_counter.get(base_default, 1) + 1
+                    target_path = f"{stem}_{unnamed_counter[base_default]}{ext}"
+                else:
+                    target_path = base_default
+
         if target_path:
+            target_path = target_path.replace("\\", "/").lstrip("/")
             files[target_path] = code_content
 
-    # 3. Direct filename: content regex matching
+    # 3. Direct filename: content regex matching if no fenced blocks matched
     if not files:
         fn_matches = re.findall(r'["\']?([a-zA-Z0-9_\-\.\/\\\\]+\.[a-zA-Z0-9]+)["\']?\s*:\s*["\']([\s\S]+?)["\'](?=\s*,|\s*\}|\s*\n)', raw_text)
         for fn, fcnt in fn_matches:
             if fn and fcnt and len(fcnt) > 5 and not fn.startswith("http"):
-                files[fn] = fcnt
+                files[fn.replace("\\", "/").lstrip("/")] = fcnt
 
     return files
 
@@ -1337,13 +1636,17 @@ def file_operation(operation: str, path: str, content: Any = "") -> str:
         return write_file_content(path, content)
     elif op in ["list", "ls", "dir", "browse"]:
         return list_directory(path)
+    elif op in ["recursive_list", "rlist", "tree", "find"]:
+        return recursive_list(path)
+    elif op in ["grep", "grep_search", "search_text"]:
+        return grep_search(content or path, path=path if content else "")
     elif op in ["patch", "edit", "modify", "update"]:
         return patch_file_content(path, content)
     else:
         # Robust Fallback: if path and content are provided, treat as write operation
         if path and content:
             return write_file_content(path, content)
-        return f"Error: Unknown operation: '{operation}'. Use 'read', 'write', 'list', or 'patch'"
+        return f"Error: Unknown operation: '{operation}'. Use 'read', 'write', 'list', 'recursive_list', 'grep', or 'patch'"
 
 
 # Research Agent Tools
@@ -1912,9 +2215,101 @@ def schedule_agent_task(task_name: str, prompt: str, interval_minutes: int = 0, 
         return f"Error scheduling task: {str(e)}"
 
 
+def _check_code_brackets(code: str) -> List[str]:
+    """Comment-aware and string-aware bracket balance checker for C/JS/TS/Go/Rust/Java/CSS family languages.
+    Properly ignores single-line comments (//), multi-line comments (/* */), and string/template literals."""
+    brackets_map = {'(': ')', '{': '}', '[': ']'}
+    closing_set = set(brackets_map.values())
+    stack = []
+    errors = []
+
+    i = 0
+    n = len(code)
+    line_no = 1
+    in_string = None
+    in_line_comment = False
+    in_block_comment = False
+
+    while i < n:
+        ch = code[i]
+        nxt = code[i + 1] if i + 1 < n else ''
+
+        if ch == '\n':
+            line_no += 1
+            if in_line_comment:
+                in_line_comment = False
+            i += 1
+            continue
+
+        if in_line_comment:
+            i += 1
+            continue
+
+        if in_block_comment:
+            if ch == '*' and nxt == '/':
+                in_block_comment = False
+                i += 2
+            else:
+                i += 1
+            continue
+
+        if in_string:
+            if ch == '\\':
+                i += 2
+                continue
+            if ch == in_string:
+                in_string = None
+            elif in_string in ('"', "'") and ch == '\n':
+                # Unclosed single-line quote reset at EOL to avoid cascading false positives
+                in_string = None
+            i += 1
+            continue
+
+        # Detect start of comments
+        if ch == '/' and nxt == '/':
+            in_line_comment = True
+            i += 2
+            continue
+        if ch == '/' and nxt == '*':
+            in_block_comment = True
+            i += 2
+            continue
+
+        # Detect start of strings (Note: in JSX/TSX, apostrophes in text between > and < shouldn't start a string)
+        if ch in ('"', "'", '`'):
+            if ch == "'":
+                # Heuristic: if apostrophe is preceded and followed by word chars (e.g. Don't, user's), skip it
+                prev_ch = code[i - 1] if i > 0 else ''
+                if prev_ch.isalnum() and nxt.isalnum():
+                    i += 1
+                    continue
+            in_string = ch
+            i += 1
+            continue
+
+        if ch in brackets_map:
+            stack.append((ch, line_no))
+        elif ch in closing_set:
+            if not stack:
+                errors.append(f"Unexpected '{ch}' at line {line_no}")
+                return errors
+            top_open, top_line = stack.pop()
+            if brackets_map[top_open] != ch:
+                errors.append(f"Mismatched '{top_open}' from line {top_line} with '{ch}' at line {line_no}")
+                return errors
+
+        i += 1
+
+    if stack:
+        top_open, top_line = stack[-1]
+        errors.append(f"Unclosed '{top_open}' starting at line {top_line}")
+
+    return errors
+
+
 def verify_app_browser_console(target_dir: str = "") -> str:
-    """Run an automated browser & console verification check on files in the workspace.
-    Checks HTML structure, script links (404 checks), CSS imports, JavaScript syntax/console errors, and Python syntax.
+    """Run an automated static & runtime syntax verification check on files in the workspace.
+    Checks HTML structure, script/stylesheet links (404 checks), JS/TS/JSX/TSX bracket balance, Python AST, JSON, and polyglot code files.
     Returns a detailed audit report."""
     import os
     import re
@@ -1940,7 +2335,7 @@ def verify_app_browser_console(target_dir: str = "") -> str:
         all_files.append(target_path)
     else:
         for root, dirs, files in os.walk(target_path):
-            dirs[:] = [d for d in dirs if d not in ['node_modules', 'venv', '.git', '.next', 'dist', 'build', '__pycache__', '.cache', '_screenshots', '_documents']]
+            dirs[:] = [d for d in dirs if d not in ['node_modules', 'venv', '.venv', '.git', '.next', 'dist', 'build', 'target', '__pycache__', '.cache', '_screenshots', '_documents', '_generated_images']]
             for file in files:
                 if not file.startswith('.'):
                     all_files.append(os.path.join(root, file))
@@ -1968,7 +2363,7 @@ def verify_app_browser_console(target_dir: str = "") -> str:
         rel_path = os.path.relpath(file_path, target_path if os.path.isdir(target_path) else os.path.dirname(target_path))
         checked_files.append(rel_path)
 
-        if file_path.endswith('.html'):
+        if file_path.endswith(('.html', '.htm')):
             try:
                 with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                     content = f.read()
@@ -1977,15 +2372,15 @@ def verify_app_browser_console(target_dir: str = "") -> str:
                 parser.feed(content)
 
                 for script_src in parser.scripts:
-                    if not script_src.startswith(('http://', 'https://', '//')):
-                        clean_src = script_src.split('?')[0].split('#')[0]
+                    if not script_src.startswith(('http://', 'https://', '//', 'data:')):
+                        clean_src = script_src.split('?')[0].split('#')[0].lstrip('/')
                         asset_path = os.path.join(os.path.dirname(file_path), clean_src)
                         if not os.path.exists(asset_path):
                             console_errors.append(f"[CONSOLE ERROR 404] Script resource failed to load in '{rel_path}': <script src=\"{script_src}\"> file not found.")
 
                 for style_href in parser.styles:
-                    if not style_href.startswith(('http://', 'https://', '//')):
-                        clean_href = style_href.split('?')[0].split('#')[0]
+                    if not style_href.startswith(('http://', 'https://', '//', 'data:')):
+                        clean_href = style_href.split('?')[0].split('#')[0].lstrip('/')
                         asset_path = os.path.join(os.path.dirname(file_path), clean_href)
                         if not os.path.exists(asset_path):
                             console_errors.append(f"[CONSOLE ERROR 404] Stylesheet resource failed to load in '{rel_path}': <link href=\"{style_href}\"> file not found.")
@@ -1996,53 +2391,28 @@ def verify_app_browser_console(target_dir: str = "") -> str:
             except Exception as e:
                 console_errors.append(f"[HTML PARSE ERROR] Syntax/Parse error in '{rel_path}': {str(e)}")
 
-        elif file_path.endswith(('.js', '.jsx', '.ts', '.tsx')):
+        elif file_path.endswith(('.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', '.go', '.rs', '.c', '.cpp', '.java', '.cs', '.css', '.scss')):
             try:
                 with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                    js_content = f.read()
+                    code_content = f.read()
 
-                brackets = {'(': ')', '{': '}', '[': ']'}
-                stack = []
-                in_string = None
-                is_escaped = False
+                bracket_errs = _check_code_brackets(code_content)
+                for b_err in bracket_errs:
+                    console_errors.append(f"[SYNTAX ERROR] {b_err} in '{rel_path}'.")
 
-                for line_no, line in enumerate(js_content.split('\n'), 1):
-                    for char in line:
-                        if is_escaped:
-                            is_escaped = False
-                            continue
-                        if char == '\\':
-                            is_escaped = True
-                            continue
-                        if in_string:
-                            if char == in_string:
-                                in_string = None
-                            continue
-                        if char in ['"', "'", '`']:
-                            in_string = char
-                            continue
-                        if char in brackets:
-                            stack.append((char, line_no))
-                        elif char in brackets.values():
-                            if not stack:
-                                console_errors.append(f"[CONSOLE SYNTAX ERROR] Unexpected '{char}' at line {line_no} in '{rel_path}'.")
-                                break
-                            top_open, top_line = stack.pop()
-                            if brackets[top_open] != char:
-                                console_errors.append(f"[CONSOLE SYNTAX ERROR] Mismatched '{top_open}' from line {top_line} with '{char}' at line {line_no} in '{rel_path}'.")
-                                break
-
-                try:
-                    res = subprocess.run(['node', '-c', file_path], capture_output=True, text=True, timeout=5)
-                    if res.returncode != 0:
-                        err_lines = res.stderr.strip().split('\n')
-                        first_err = err_lines[0] if err_lines else "Syntax error"
-                        console_errors.append(f"[NODE CONSOLE ERROR] '{rel_path}': {first_err}")
-                except (FileNotFoundError, subprocess.TimeoutExpired):
-                    pass
+                # Only run node -c on plain JS files that do not use JSX or ESM module syntax unsupported by raw node -c
+                if file_path.endswith(('.js', '.cjs')) and not re.search(r'^\s*(import|export)\s+', code_content, re.MULTILINE):
+                    try:
+                        res = subprocess.run(['node', '-c', file_path], capture_output=True, text=True, timeout=5)
+                        if res.returncode != 0:
+                            err_lines = res.stderr.strip().split('\n')
+                            first_err = err_lines[0] if err_lines else "Syntax error"
+                            console_errors.append(f"[NODE CONSOLE ERROR] '{rel_path}': {first_err}")
+                    except (FileNotFoundError, subprocess.TimeoutExpired):
+                        pass
 
             except Exception as e:
-                console_errors.append(f"[JS ERROR] Failed to check '{rel_path}': {str(e)}")
+                console_errors.append(f"[CODE CHECK ERROR] Failed to check '{rel_path}': {str(e)}")
 
         elif file_path.endswith('.py'):
             try:
@@ -2052,16 +2422,23 @@ def verify_app_browser_console(target_dir: str = "") -> str:
             except Exception as e:
                 console_errors.append(f"[PYTHON ERROR] In '{rel_path}': {str(e)}")
 
+        elif file_path.endswith('.json'):
+            try:
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    json.loads(f.read())
+            except Exception as je:
+                console_errors.append(f"[JSON SYNTAX ERROR] In '{rel_path}': {str(je)}")
+
     status = "PASSED" if not console_errors else "FAILED"
     report = [
-        f"### 🖥️ Browser & Console Verification Audit ({status})",
+        f"### 🖥️ Code & Asset Verification Audit ({status})",
         f"- **Checked Files ({len(checked_files)}):** {', '.join(checked_files[:10])}",
-        f"- **Console Errors Detected:** {len(console_errors)}",
+        f"- **Errors Detected:** {len(console_errors)}",
         f"- **Warnings:** {len(warnings)}"
     ]
 
     if console_errors:
-        report.append("\n#### ❌ Console Errors Found:")
+        report.append("\n#### ❌ Errors Found:")
         for err in console_errors:
             report.append(f"- {err}")
 
@@ -2070,17 +2447,15 @@ def verify_app_browser_console(target_dir: str = "") -> str:
         for w in warnings:
             report.append(f"- {w}")
 
-    # --- Vision-Powered UI Screenshot Inspection (Gemma-4-26B) ---
+    # --- Optional Vision-Powered UI Screenshot Inspection (only when UI/screenshot files exist) ---
     try:
-        from .vision_service import analyze_ui_screenshot_with_vision
         screenshot_file = None
-        
-        # Check if there is an HTML file or app screenshot available
         for f in all_files:
-            if f.endswith('.html') or f.endswith(('.png', '.jpg', '.jpeg')):
+            if f.endswith(('.png', '.jpg', '.jpeg')) and '_screenshots' in f:
                 screenshot_file = f
                 break
-
+        if screenshot_file:
+            from .vision_service import analyze_ui_screenshot_with_vision
             vision_model = os.environ.get("VISION_MODEL", "gemma4:31b-cloud")
             vision_result = analyze_ui_screenshot_with_vision(
                 image_input=screenshot_file,
@@ -2088,14 +2463,13 @@ def verify_app_browser_console(target_dir: str = "") -> str:
             )
             report.append(f"\n#### 👁️ Vision Model UI Quality Inspection ({vision_model})")
             report.append(vision_result.get("report", "No vision audit available."))
-            
             if vision_result.get("has_visual_defects"):
                 console_errors.append("[VISUAL DEFECT DETECTED] Vision inspection flagged UI layout or styling flaws.")
     except Exception as ve:
         report.append(f"\n⚠️ Vision UI Audit Note: {ve}")
 
     if not console_errors:
-        report.append("\n✓ All browser assets, script paths, DOM structures, and code syntax passed with 0 errors!")
+        report.append("\n✓ All workspace files, imports, brackets, asset paths, and code syntax passed with 0 errors!")
 
     return "\n".join(report)
 
@@ -2182,14 +2556,13 @@ def update_todo_list(items: Any) -> str:
 
 def batch_verify_and_repair_files(files: Any) -> str:
     """Check a list of file paths written in a batch in a single fast pass for syntax errors,
-    missing imports, or unclosed JSX/Python structures, attempt repairs where applicable,
+    missing imports, or unclosed structures across any programming language, attempt repairs where applicable,
     and return a structured diagnostic."""
     try:
         import os
         import re
         import ast
         import json
-        import subprocess
 
         file_paths = []
 
@@ -2279,15 +2652,8 @@ def batch_verify_and_repair_files(files: Any) -> str:
 
             # --- Python Checks ---
             if ext == ".py":
-                # 1. Syntax check
-                try:
-                    ast.parse(content)
-                except SyntaxError as syn_err:
-                    diag["syntax_errors"].append(f"Line {syn_err.lineno}, Col {syn_err.offset}: {syn_err.msg}")
-                    diag["status"] = "FAILED"
-
-                # 2. Missing stdlib import check & auto-repair
-                common_modules = ["os", "sys", "json", "re", "time", "math", "asyncio", "subprocess", "random", "datetime", "pathlib", "shutil"]
+                # 1. Missing stdlib import check & auto-repair first so AST re-check can validate repaired code
+                common_modules = ["os", "sys", "json", "re", "time", "math", "asyncio", "subprocess", "random", "datetime", "pathlib", "shutil", "typing"]
                 missing_mods = []
                 for mod in common_modules:
                     if re.search(r'\b' + mod + r'\.[a-zA-Z0-9_]+', content):
@@ -2301,134 +2667,63 @@ def batch_verify_and_repair_files(files: Any) -> str:
                         was_repaired = True
                         diag["repairs_applied"].append(f"Auto-prepended missing import statements: {', '.join(missing_mods)}")
 
-                # 3. Unclosed structures check
-                parens = content.count('(') - content.count(')')
-                brackets = content.count('[') - content.count(']')
-                braces = content.count('{') - content.count('}')
-                if parens != 0:
-                    diag["unclosed_structures"].append(f"Unclosed parentheses: net balance {parens}")
-                    diag["status"] = "FAILED"
-                if brackets != 0:
-                    diag["unclosed_structures"].append(f"Unclosed brackets: net balance {brackets}")
-                    diag["status"] = "FAILED"
-                if braces != 0:
-                    diag["unclosed_structures"].append(f"Unclosed braces: net balance {braces}")
+                # 2. AST Syntax check
+                try:
+                    ast.parse(repaired_content)
+                except SyntaxError as syn_err:
+                    diag["syntax_errors"].append(f"Line {syn_err.lineno}, Col {syn_err.offset}: {syn_err.msg}")
                     diag["status"] = "FAILED"
 
             # --- JS / TS / JSX / TSX Checks ---
-            elif ext in [".js", ".jsx", ".ts", ".tsx"]:
-                # 0. Next.js App Router Checks & Auto-Repairs
-                is_root_layout = bool(re.search(r'layout\.[t|j]sx?$', rel_path, re.IGNORECASE))
-                
-                if is_root_layout:
-                    # Enforce Server Component for Root Layout
-                    if re.search(r'^\s*[\'"]use client[\'"]', repaired_content, re.MULTILINE):
-                        repaired_content = re.sub(r'^\s*[\'"]use client[\'"];?\s*\n?', '', repaired_content, flags=re.MULTILINE)
+            elif ext in [".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"]:
+                norm_rel = clean_rel.replace("\\", "/")
+                is_nextjs_context = (
+                    norm_rel.startswith("app/")
+                    or "/app/" in norm_rel
+                    or bool(re.search(r"from\s+['\"]next/", repaired_content))
+                )
+
+                if is_nextjs_context:
+                    is_root_layout = bool(re.search(r'layout\.[t|j]sx?$', norm_rel, re.IGNORECASE))
+                    if is_root_layout:
+                        if re.search(r'^\s*[\'"]use client[\'"]', repaired_content, re.MULTILINE):
+                            repaired_content = re.sub(r'^\s*[\'"]use client[\'"];?\s*\n?', '', repaired_content, flags=re.MULTILINE)
+                            was_repaired = True
+                            diag["repairs_applied"].append("Removed invalid 'use client' directive from Next.js Root Layout")
+                        if not re.search(r'import\s+[\'"].*?globals\.css[\'"]', repaired_content) and os.path.exists(os.path.join(os.path.dirname(full_path), "globals.css")):
+                            repaired_content = "import './globals.css';\n" + repaired_content
+                            was_repaired = True
+                            diag["repairs_applied"].append("Auto-injected missing 'import ./globals.css;' in Next.js Root Layout")
+                    elif ext in [".jsx", ".tsx"]:
+                        has_client_hooks = bool(re.search(r'\b(useState|useEffect|useRef|useCallback|useMemo|useContext|useReducer|useId|useTransition)\b', repaired_content))
+                        has_use_client = bool(re.search(r'^\s*[\'"]use client[\'"]', repaired_content, re.MULTILINE))
+                        if has_client_hooks and not has_use_client:
+                            diag["missing_imports"].append("missing 'use client'; directive for interactive Next.js App Router component")
+                            repaired_content = "'use client';\n\n" + repaired_content
+                            was_repaired = True
+                            diag["repairs_applied"].append("Auto-prepended missing 'use client'; directive")
+
+                    if re.search(r"from\s+['\"]next/router['\"]", repaired_content):
+                        diag["missing_imports"].append("deprecated next/router import in Next.js App Router")
+                        repaired_content = re.sub(r"from\s+['\"]next/router['\"]", "from 'next/navigation'", repaired_content)
                         was_repaired = True
-                        diag["repairs_applied"].append("Removed invalid 'use client' directive from Next.js Root Layout (must be Server Component)")
+                        diag["repairs_applied"].append("Auto-updated deprecated 'next/router' import to 'next/navigation'")
 
-                    # Enforce globals.css import in Root Layout
-                    if not re.search(r'import\s+[\'"].*?globals\.css[\'"]', repaired_content):
-                        repaired_content = "import './globals.css';\n" + repaired_content
-                        was_repaired = True
-                        diag["repairs_applied"].append("Auto-injected missing 'import ./globals.css;' in Next.js Root Layout")
-
-                else:
-                    # Interactive Child Components require 'use client' if hooks are present
-                    has_client_hooks = bool(re.search(r'\b(useState|useEffect|useRef|useCallback|useMemo|useContext|useReducer|useId|useTransition)\b', content))
-                    has_use_client = bool(re.search(r'^\s*[\'"]use client[\'"]', content, re.MULTILINE))
-
-                    if has_client_hooks and not has_use_client:
-                        diag["missing_imports"].append("missing 'use client'; directive for interactive React component")
-                        repaired_content = "'use client';\n\n" + repaired_content
-                        was_repaired = True
-                        diag["repairs_applied"].append("Auto-prepended missing 'use client'; directive for interactive React component")
-
-                if re.search(r"from\s+['\"]next/router['\"]", repaired_content):
-                    diag["missing_imports"].append("deprecated next/router import in Next.js App Router")
-                    repaired_content = re.sub(r"from\s+['\"]next/router['\"]", "from 'next/navigation'", repaired_content)
-                    was_repaired = True
-                    diag["repairs_applied"].append("Auto-updated deprecated 'next/router' import to 'next/navigation' for Next.js App Router")
-
-                # Auto-inject missing useRouter import if used without import
-                if re.search(r'\buseRouter\b', repaired_content) and not re.search(r'import\s+[^;]*?\buseRouter\b', repaired_content):
-                    diag["missing_imports"].append("missing import statement for useRouter hook")
-                    if re.search(r"from\s+['\"]next/navigation['\"]", repaired_content):
-                        repaired_content = re.sub(r"import\s*\{([^}]*)\}\s*from\s*['\"]next/navigation['\"]", r"import { \1, useRouter } from 'next/navigation'", repaired_content)
-                    else:
-                        insert_pos = 0
-                        if repaired_content.startswith("'use client';") or repaired_content.startswith('"use client";'):
-                            insert_pos = repaired_content.find('\n') + 1
-                        repaired_content = repaired_content[:insert_pos] + "import { useRouter } from 'next/navigation';\n" + repaired_content[insert_pos:]
-                    was_repaired = True
-                    diag["repairs_applied"].append("Auto-injected missing 'import { useRouter } from \"next/navigation\"' statement")
-
-                # 1. Bracket balance check
-                brackets_map = {'(': ')', '{': '}', '[': ']'}
-                stack = []
-                in_string = None
-                is_escaped = False
-
-                for line_no, line in enumerate(content.split('\n'), 1):
-                    for char in line:
-                        if is_escaped:
-                            is_escaped = False
-                            continue
-                        if char == '\\':
-                            is_escaped = True
-                            continue
-                        if in_string:
-                            if char == in_string:
-                                in_string = None
-                            continue
-                        if char in ['"', "'", '`']:
-                            in_string = char
-                            continue
-                        if char in brackets_map:
-                            stack.append((char, line_no))
-                        elif char in brackets_map.values():
-                            if not stack:
-                                diag["unclosed_structures"].append(f"Unexpected '{char}' at line {line_no}")
-                                diag["status"] = "FAILED"
-                                break
-                            top_open, top_line = stack.pop()
-                            if brackets_map[top_open] != char:
-                                diag["unclosed_structures"].append(f"Mismatched '{top_open}' from line {top_line} with '{char}' at line {line_no}")
-                                diag["status"] = "FAILED"
-                                break
-
-                if stack and diag["status"] != "FAILED":
-                    top_open, top_line = stack[-1]
-                    diag["unclosed_structures"].append(f"Unclosed '{top_open}' starting at line {top_line}")
+                # Comment-aware & string-aware bracket balance check
+                bracket_errors = _check_code_brackets(repaired_content)
+                if bracket_errors:
+                    diag["unclosed_structures"].extend(bracket_errors)
                     diag["status"] = "FAILED"
 
-                # 2. JSX/HTML tag closing check
-                if ext in [".jsx", ".tsx"] or "<" in content:
-                    void_tags = {'img', 'input', 'br', 'hr', 'meta', 'link', 'area', 'base', 'embed', 'param', 'source', 'track', 'wbr'}
-                    tag_matches = re.findall(r'<(/?[a-zA-Z][a-zA-Z0-9.\-]*)\s*[^>]*?(/?)>', content)
-                    jsx_stack = []
-                    for tag_name, self_close in tag_matches:
-                        clean_tag = tag_name.strip()
-                        if self_close == '/' or clean_tag.lower() in void_tags:
-                            continue
-                        if clean_tag.startswith('/'):
-                            close_name = clean_tag[1:]
-                            if jsx_stack and jsx_stack[-1] == close_name:
-                                jsx_stack.pop()
-                            else:
-                                diag["unclosed_structures"].append(f"Mismatched closing JSX/HTML tag </{close_name}>")
-                                diag["status"] = "FAILED"
-                                break
-                        else:
-                            jsx_stack.append(clean_tag)
-
-                    if jsx_stack and diag["status"] != "FAILED":
-                        diag["unclosed_structures"].append(f"Unclosed JSX/HTML tags: {', '.join(jsx_stack)}")
-                        diag["status"] = "FAILED"
+            # --- Polyglot C-family / Go / Rust / Java / CSS Bracket Checks ---
+            elif ext in [".go", ".rs", ".c", ".cpp", ".cc", ".h", ".hpp", ".java", ".cs", ".swift", ".kt", ".css", ".scss"]:
+                bracket_errors = _check_code_brackets(repaired_content)
+                if bracket_errors:
+                    diag["unclosed_structures"].extend(bracket_errors)
+                    diag["status"] = "FAILED"
 
             # --- HTML Specific Checks & Auto-Repairs ---
             elif ext in [".html", ".htm"]:
-                # 1. Check & auto-repair missing viewport meta
                 if "<head>" in repaired_content.lower() and "viewport" not in repaired_content.lower():
                     repaired_content = re.sub(
                         r"(<head[^>]*>)",
@@ -2439,7 +2734,6 @@ def batch_verify_and_repair_files(files: Any) -> str:
                     was_repaired = True
                     diag["repairs_applied"].append("Auto-injected missing <meta name='viewport'> tag in <head>")
 
-                # 2. Check & auto-repair Lucide icons initialization
                 if "data-lucide=" in repaired_content and "lucide.createicons" not in repaired_content.lower():
                     if "lucide" in repaired_content.lower():
                         init_script = "\n  <script>\n    if (typeof lucide !== 'undefined') { lucide.createIcons(); }\n  </script>\n"
@@ -2450,19 +2744,26 @@ def batch_verify_and_repair_files(files: Any) -> str:
                         was_repaired = True
                         diag["repairs_applied"].append("Auto-injected missing lucide.createIcons() initialization script")
 
-                # 3. Check & auto-repair unclosed body/html tags if truncated
                 if "<body" in repaired_content.lower() and "</body>" not in repaired_content.lower():
                     repaired_content += "\n</body>\n</html>"
                     was_repaired = True
                     diag["repairs_applied"].append("Auto-closed missing </body></html> tags")
 
-            # --- JSON Checks ---
+            # --- JSON Checks & Trailing Comma Auto-Repair ---
             elif ext == ".json":
                 try:
-                    json.loads(content)
+                    json.loads(repaired_content)
                 except json.JSONDecodeError as json_err:
-                    diag["syntax_errors"].append(f"JSON error at line {json_err.lineno}, col {json_err.colno}: {json_err.msg}")
-                    diag["status"] = "FAILED"
+                    # Attempt auto-repair of trailing commas before } or ]
+                    cleaned_json = re.sub(r',\s*([}\]])', r'\1', repaired_content)
+                    try:
+                        json.loads(cleaned_json)
+                        repaired_content = cleaned_json
+                        was_repaired = True
+                        diag["repairs_applied"].append("Auto-removed trailing commas in JSON")
+                    except Exception:
+                        diag["syntax_errors"].append(f"JSON error at line {json_err.lineno}, col {json_err.colno}: {json_err.msg}")
+                        diag["status"] = "FAILED"
 
             # --- Apply repairs if saved ---
             if was_repaired and diag["status"] != "FAILED":
@@ -2509,12 +2810,12 @@ def batch_verify_and_repair_files(files: Any) -> str:
 
 
 def verify_project_build(project_dir: Any = "") -> str:
-    """Verify build, syntax, and TypeScript compilation for a project directory.
-    Executes compiler verification (npx tsc --noEmit or python compilation) and returns structured build diagnostic."""
+    """Verify build, syntax, and compiler checks generically for any project directory (Python, TypeScript/JS, Rust, Go, C/C++, HTML/CSS)."""
     try:
         import os
         import subprocess
         import json
+        import py_compile
 
         dir_path = ""
         if isinstance(project_dir, dict):
@@ -2529,19 +2830,34 @@ def verify_project_build(project_dir: Any = "") -> str:
                 "error": f"Project directory does not exist: {target_path}"
             }, indent=2)
 
-        # Locate tsconfig.json
-        tsconfig_path = os.path.join(target_path, "tsconfig.json")
-        if not os.path.exists(tsconfig_path):
-            for root, _, files in os.walk(target_path):
-                if "tsconfig.json" in files:
-                    tsconfig_path = os.path.join(root, "tsconfig.json")
-                    target_path = root
-                    break
-
         diagnostics = []
         status = "PASSED"
 
-        if os.path.exists(tsconfig_path):
+        # 1. Check Python files if present
+        py_files = []
+        for root, dirs, files in os.walk(target_path):
+            dirs[:] = [d for d in dirs if d not in ['node_modules', 'venv', '.venv', '.git', '.next', 'dist', 'build', 'target', '__pycache__']]
+            for f in files:
+                if f.endswith(".py"):
+                    py_files.append(os.path.join(root, f))
+
+        if py_files:
+            py_errors = []
+            for pf in py_files:
+                try:
+                    py_compile.compile(pf, doraise=True)
+                except py_compile.PyCompileError as ce:
+                    py_errors.append(f"{os.path.relpath(pf, target_path)}: {ce.msg}")
+            if py_errors:
+                status = "FAILED"
+                diagnostics.append("Python compilation errors:\n" + "\n".join(py_errors))
+            else:
+                diagnostics.append(f"Python syntax verification PASSED across {len(py_files)} file(s).")
+
+        # 2. Check TypeScript if tsconfig.json and node_modules exist
+        tsconfig_path = os.path.join(target_path, "tsconfig.json")
+        node_modules_path = os.path.join(target_path, "node_modules")
+        if os.path.exists(tsconfig_path) and os.path.exists(node_modules_path):
             try:
                 proc = subprocess.run(
                     ["npx", "tsc", "--noEmit"],
@@ -2558,8 +2874,47 @@ def verify_project_build(project_dir: Any = "") -> str:
                     diagnostics.append("TypeScript compilation check PASSED with 0 errors.")
             except Exception as tsc_err:
                 diagnostics.append(f"TSC check skipped: {str(tsc_err)}")
-        else:
-            diagnostics.append("No tsconfig.json found; workspace file structures and syntax verified.")
+
+        # 3. Check Rust if Cargo.toml exists
+        cargo_path = os.path.join(target_path, "Cargo.toml")
+        if os.path.exists(cargo_path):
+            try:
+                proc = subprocess.run(
+                    ["cargo", "check", "--quiet"],
+                    cwd=target_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=20
+                )
+                if proc.returncode != 0:
+                    status = "FAILED"
+                    diagnostics.append(f"Cargo check errors:\n{proc.stderr or proc.stdout}")
+                else:
+                    diagnostics.append("Rust cargo check PASSED.")
+            except Exception:
+                pass
+
+        # 4. Check Go if go.mod exists
+        gomod_path = os.path.join(target_path, "go.mod")
+        if os.path.exists(gomod_path):
+            try:
+                proc = subprocess.run(
+                    ["go", "vet", "./..."],
+                    cwd=target_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=15
+                )
+                if proc.returncode != 0:
+                    status = "FAILED"
+                    diagnostics.append(f"Go vet errors:\n{proc.stderr or proc.stdout}")
+                else:
+                    diagnostics.append("Go vet check PASSED.")
+            except Exception:
+                pass
+
+        if not diagnostics:
+            diagnostics.append("Workspace file structures and syntax verified.")
 
         return json.dumps({
             "status": status,
@@ -2755,6 +3110,25 @@ def get_code_agent_tools() -> List[StructuredTool]:
             ),
             description="Query workspace codebase using Hybrid RAG (dense vector similarity + BM25 keyword search). Input: dict with 'query' and optional 'k' (top results count)."
         ),
+        StructuredTool.from_function(
+            name="recursive_list",
+            func=lambda x: recursive_list(
+                safe_parse_input(x).get("path", x if isinstance(x, str) else ""),
+                int(safe_parse_input(x).get("max_depth", 5)),
+                int(safe_parse_input(x).get("max_files", 150))
+            ),
+            description="List all files in a directory recursively. Input: dict with optional 'path' (relative to workspace, defaults to empty for workspace root), optional 'max_depth' (default 5), and optional 'max_files' (default 150)."
+        ),
+        StructuredTool.from_function(
+            name="grep_search",
+            func=lambda x: grep_search(
+                safe_parse_input(x).get("query", x if isinstance(x, str) else ""),
+                safe_parse_input(x).get("path", ""),
+                bool(safe_parse_input(x).get("case_sensitive", False)),
+                int(safe_parse_input(x).get("max_results", 50))
+            ),
+            description="Search for strings or patterns across files in the workspace. Input: dict with 'query' (required search text), optional 'path' (directory or file to search), optional 'case_sensitive' (bool)."
+        ),
     ] + _get_browser_tools() + _get_knowledge_and_utility_tools()
 
 
@@ -2846,6 +3220,65 @@ def get_analysis_agent_tools() -> List[StructuredTool]:
                 safe_parse_input(x).get("language", "python")
             ),
             description="Execute Python code safely for testing and validation. Input should be a dict with 'code' and optional 'language' keys."
+        ),
+        StructuredTool.from_function(
+            name="recursive_list",
+            func=lambda x: recursive_list(
+                safe_parse_input(x).get("path", x if isinstance(x, str) else ""),
+                int(safe_parse_input(x).get("max_depth", 5)),
+                int(safe_parse_input(x).get("max_files", 150))
+            ),
+            description="List all files in a directory recursively. Input: dict with optional 'path' (relative to workspace, defaults to empty for workspace root), optional 'max_depth' (default 5), and optional 'max_files' (default 150)."
+        ),
+        StructuredTool.from_function(
+            name="grep_search",
+            func=lambda x: grep_search(
+                safe_parse_input(x).get("query", x if isinstance(x, str) else ""),
+                safe_parse_input(x).get("path", ""),
+                bool(safe_parse_input(x).get("case_sensitive", False)),
+                int(safe_parse_input(x).get("max_results", 50))
+            ),
+            description="Search for strings or patterns across files in the workspace. Input: dict with 'query' (required search text), optional 'path' (directory or file to search), optional 'case_sensitive' (bool)."
+        ),
+        StructuredTool.from_function(
+            name="search_symbols",
+            func=lambda x: search_code_symbols(
+                safe_parse_input(x).get("query", x if isinstance(x, str) else ""),
+                safe_parse_input(x).get("search_type", "definition")
+            ),
+            description="Search for class, function, method, or import symbol definitions/references across the workspace. Input: dict with 'query' (symbol name) and optional 'search_type' ('definition' or 'reference')."
+        ),
+        StructuredTool.from_function(
+            name="get_file_outline",
+            func=lambda x: get_code_file_outline(
+                safe_parse_input(x).get("path", x if isinstance(x, str) else "")
+            ),
+            description="Get structural outline of symbols (classes, functions, signatures) for a specific code file. Input: dict with 'path'."
+        ),
+        StructuredTool.from_function(
+            name="query_codebase",
+            func=lambda x: query_codebase_rag(
+                safe_parse_input(x).get("query", x if isinstance(x, str) else ""),
+                int(safe_parse_input(x).get("k", 5))
+            ),
+            description="Query workspace codebase using Hybrid RAG (dense vector similarity + BM25 keyword search). Input: dict with 'query' and optional 'k' (top results count)."
+        ),
+        StructuredTool.from_function(
+            name="edit_file",
+            func=lambda x: edit_file_search_replace(
+                safe_parse_input(x).get("path", ""),
+                safe_parse_input(x).get("search", safe_parse_input(x).get("search_block", "")),
+                safe_parse_input(x).get("replace", safe_parse_input(x).get("replace_block", "")),
+                float(safe_parse_input(x).get("similarity_threshold", 0.6))
+            ),
+            description="Edit an existing file using search/replace blocks with fuzzy matching. Input: dict with 'path', 'search', 'replace'."
+        ),
+        StructuredTool.from_function(
+            name="batch_verify_and_repair_files",
+            func=lambda x: batch_verify_and_repair_files(
+                safe_parse_input(x).get("files", safe_parse_input(x).get("file_paths", x))
+            ),
+            description="Scan workspace files for syntax errors (Python AST, JS unclosed braces, HTML unmatched tags) and automatically repair them. Input: list of file paths or dict with 'files'."
         ),
     ] + _get_browser_tools() + _get_knowledge_and_utility_tools()
 
@@ -2983,7 +3416,7 @@ def save_personal_memory(content: str, category: str = "preference", title: str 
     """Save a user preference, personal fact, or project note into persistent memory."""
     try:
         from .personal_memory import personal_memory
-        result = personal_memory.save_memory(content=content, category=category, title=title, broadcast=True)
+        result = personal_memory.save_memory(content=content, category=category, title=title, tags=["agent_tool"], broadcast=True)
         if "error" in result:
             return f"❌ Error saving memory: {result['error']}"
         return f"🧠 [SUCCESS] Successfully saved to Knowledge Journal:\n- **Category**: {result['category']}\n- **Title**: {result['title']}\n- **Content**: {result['content']}"

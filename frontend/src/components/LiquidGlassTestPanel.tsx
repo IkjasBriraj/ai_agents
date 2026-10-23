@@ -25,7 +25,7 @@ export const PROVIDERS = [
 
 export const LiquidGlassTestPanel: React.FC<TestAgentProps> = ({ agent, onClose }) => {
   const [provider, setProvider] = useState<string>('ollama');
-  const [selectedModel, setSelectedModel] = useState<string>('granite4.1:8b');
+  const [selectedModel, setSelectedModel] = useState<string>('gemma4:31b-cloud');
   const [apiKey, setApiKey] = useState<string>('');
   const [showApiKey, setShowApiKey] = useState<boolean>(false);
   const [step, setStep] = useState<'config' | 'expanded'>('config');

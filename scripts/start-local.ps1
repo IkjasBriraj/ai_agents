@@ -18,12 +18,15 @@ if (-not $SkipOllamaCheck -and -not (Get-Command ollama -ErrorAction SilentlyCon
     Write-Warning "Ollama was not found. The UI will start, but AI conversations will stay unavailable. Install Ollama or rerun with -SkipOllamaCheck."
 }
 
-if (-not (Test-Path (Join-Path $projectRoot 'frontend\\node_modules'))) {
+if (-not (Test-Path (Join-Path $projectRoot 'frontend\node_modules'))) {
     throw "Frontend dependencies are missing. Run 'npm install' from the frontend directory first."
 }
 
-Write-Host "Starting SeniorAgent backend at http://localhost:8000"
-Start-Process -FilePath python -ArgumentList 'main.py' -WorkingDirectory (Join-Path $projectRoot 'backend')
+$venvPython = Join-Path $projectRoot 'backend\venv\Scripts\python.exe'
+$pythonExe = if (Test-Path $venvPython) { $venvPython } else { 'python' }
+
+Write-Host "Starting SeniorAgent backend at http://localhost:8000 using $pythonExe"
+Start-Process -FilePath $pythonExe -ArgumentList 'main.py' -WorkingDirectory (Join-Path $projectRoot 'backend')
 
 Write-Host "Starting SeniorAgent frontend at http://localhost:5173"
 Start-Process -FilePath npm.cmd -ArgumentList 'run', 'dev' -WorkingDirectory (Join-Path $projectRoot 'frontend')
