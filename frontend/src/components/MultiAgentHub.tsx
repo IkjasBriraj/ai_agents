@@ -42,6 +42,7 @@ import {
   Volume2,
   VolumeX,
   Sliders,
+  FileCode,
 } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
@@ -313,6 +314,40 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
     return null;
   }, [messages]);
 
+  // Calculate active edited files list for Screenshot 5 card above prompt box
+  const activeEditedFiles = useMemo(() => {
+    const fileMap = new Map<string, { path: string; additions: number; deletions: number }>();
+    const tools = (lastAssistantMessage as any)?.toolsExecuted || (activeToolsHistory as any) || [];
+    for (const t of tools) {
+      if (t.toolName === 'file_operation' || t.toolName === 'create_project' || t.toolName === 'edit_file') {
+        try {
+          let inputObj: any = t.input || t.target;
+          if (typeof inputObj === 'string' && inputObj.startsWith('{')) {
+            try { inputObj = JSON.parse(inputObj); } catch {}
+          }
+          if (typeof inputObj === 'object' && inputObj !== null) {
+            if (t.toolName === 'create_project') {
+              for (const [p, content] of Object.entries(inputObj)) {
+                const lines = String(content).split('\\n').length;
+                fileMap.set(p, { path: p, additions: lines, deletions: 0 });
+              }
+            } else {
+              const p = inputObj.path || inputObj.file_path || inputObj.filename || 'workspace/file';
+              const lines = inputObj.content ? String(inputObj.content).split('\\n').length : (inputObj.replace ? String(inputObj.replace).split('\\n').length : 14);
+              const delLines = inputObj.search ? String(inputObj.search).split('\\n').length : 0;
+              fileMap.set(p, { path: p, additions: lines, deletions: delLines });
+            }
+          }
+        } catch {}
+      }
+    }
+    if (fileMap.size === 0 && activeCodeFilename && activeCodeSnippet) {
+      const lines = activeCodeSnippet.split('\\n').length;
+      fileMap.set(activeCodeFilename, { path: activeCodeFilename, additions: lines, deletions: 0 });
+    }
+    return Array.from(fileMap.values());
+  }, [lastAssistantMessage, activeToolsHistory, activeCodeFilename, activeCodeSnippet]);
+
   // Refresh live app from workspace directory
   const refreshWorkspaceApp = useCallback(async () => {
     try {
@@ -333,6 +368,15 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
   useEffect(() => {
     refreshWorkspaceApp();
   }, [refreshWorkspaceApp]);
+
+  // Thinking dropdown open indexes (Screenshot 4)
+  const [openThinkingIdxs, setOpenThinkingIdxs] = useState<number[]>([]);
+  const toggleThinking = (idx: number) => {
+    setOpenThinkingIdxs(prev => prev.includes(idx) ? prev.filter(i => i !== idx) : [...prev, idx]);
+  };
+
+  // Edited files dropdown open state (Screenshot 5)
+  const [showEditedFilesDropdown, setShowEditedFilesDropdown] = useState<boolean>(false);
 
   // Live Real-Time Canvas Content Extractor (matches even while streaming)
   const updateCanvasFromContent = (text: string, forcePreview: boolean = false) => {
@@ -1079,7 +1123,32 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
     setThinkingStream('');
     setThinkingTokens([]);
     setResponseTokens([]);
-    setTodoItems([]);
+    // Initialize live To-Do items based on request topic/type (Screenshot 1)
+    const lowerText = userText.toLowerCase();
+    const isPpt = lowerText.includes('ppt') || lowerText.includes('presentation') || lowerText.includes('slide') || selectedDirectAgent === 'ppt_generator';
+    const isCode = lowerText.includes('code') || lowerText.includes('website') || lowerText.includes('app') || lowerText.includes('html') || selectedDirectAgent === 'code';
+    const isSheet = lowerText.includes('excel') || lowerText.includes('sheet') || lowerText.includes('csv') || lowerText.includes('budget') || selectedDirectAgent === 'business';
+
+    const initialTodos: TodoItem[] = isPpt ? [
+      { id: '1', title: 'Analyze presentation topic & audience outline', status: 'in_progress', details: 'Structuring key narrative & slide chapters' },
+      { id: '2', title: 'Search & download high-res topic images', status: 'pending', details: 'Querying Wikimedia & visual repository' },
+      { id: '3', title: 'Synthesize professional slide layouts & notes', status: 'pending', details: 'Applying title, split-image & metric layouts' },
+      { id: '4', title: 'Compile PowerPoint (.pptx) & interactive preview', status: 'pending', details: 'Building standalone deck and Reveal.js HTML' }
+    ] : isCode ? [
+      { id: '1', title: 'Analyze requirements & system architecture', status: 'in_progress', details: 'Planning components, styles & logic' },
+      { id: '2', title: 'Generate source code & project files', status: 'pending', details: 'Writing modular code directly into workspace' },
+      { id: '3', title: 'Verify live canvas render & component integrity', status: 'pending', details: 'Checking live preview and interactions' }
+    ] : isSheet ? [
+      { id: '1', title: 'Parse tabular metrics & business data structure', status: 'in_progress', details: 'Defining columns, types & calculations' },
+      { id: '2', title: 'Generate Excel workbook & dynamic formulas', status: 'pending', details: 'Applying styling, sums & summaries' },
+      { id: '3', title: 'Export .xlsx file & interactive preview', status: 'pending', details: 'Finalizing spreadsheet download card' }
+    ] : [
+      { id: '1', title: 'Analyze prompt requirements & plan execution', status: 'in_progress', details: 'Evaluating intent and routing to specialized agent' },
+      { id: '2', title: 'Execute domain agent reasoning & tools', status: 'pending', details: 'Processing contextual data & generating output' },
+      { id: '3', title: 'Verify output quality & synthesize final response', status: 'pending', details: 'Formatting markdown and executive summary' }
+    ];
+
+    setTodoItems(initialTodos);
 
     if (mode === 'direct') {
       // Direct agent interaction (Bypasses orchestrator)
@@ -1095,6 +1164,8 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
         setActiveTool('analyze_code');
       } else if (selectedDirectAgent === 'business') {
         setActiveTool('csv_sheet_operation');
+      } else if (selectedDirectAgent === 'ppt_generator') {
+        setActiveTool('generate_presentation');
       }
 
       try {
@@ -1118,7 +1189,7 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
           thinkingTokens: [],
           responseTokens: tokensParsed,
           toolsExecuted: toolsParsed.length > 0 ? toolsParsed : [{
-            toolName: selectedDirectAgent === 'code' ? 'generate_code' : selectedDirectAgent === 'research' ? 'web_search' : selectedDirectAgent === 'analysis' ? 'analyze_code' : selectedDirectAgent === 'business' ? 'csv_sheet_operation' : 'default_tool',
+            toolName: selectedDirectAgent === 'code' ? 'generate_code' : selectedDirectAgent === 'research' ? 'web_search' : selectedDirectAgent === 'analysis' ? 'analyze_code' : selectedDirectAgent === 'ppt_generator' ? 'generate_presentation' : selectedDirectAgent === 'business' ? 'csv_sheet_operation' : 'default_tool',
             status: 'success',
             details: 'Direct agent tool execution succeeded.'
           }]
@@ -1721,11 +1792,30 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
       if (line.trim().startsWith('```')) {
         if (insideCodeBlock) {
           insideCodeBlock = false;
+          const codeString = codeBlockContent.join('\n');
+          const langLabel = (codeLanguage || 'code').toUpperCase();
           renderedElements.push(
-            <pre key={`code-${idx}`} className="bg-black/95 font-mono text-[11px] text-emerald-400 p-4 border border-border/85 overflow-x-auto my-4 max-h-[300px]">
-              {codeLanguage && <div className="text-[9px] text-muted-foreground uppercase tracking-widest border-b border-border/30 pb-1 mb-2 font-sans font-bold">{codeLanguage}</div>}
-              <code>{codeBlockContent.join('\n')}</code>
-            </pre>
+            <div key={`code-${idx}`} className="my-4 rounded-2xl border border-border/70 overflow-hidden bg-[#0d1117] shadow-xl">
+              <div className="bg-[#161b22] px-4 py-2 flex items-center justify-between border-b border-border/50 text-xs font-mono">
+                <div className="flex items-center gap-2 text-foreground font-semibold">
+                  <FileCode className="w-3.5 h-3.5 text-purple-400" />
+                  <span className="text-[10px] tracking-wider uppercase font-bold text-slate-300">{langLabel}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard.writeText(codeString);
+                  }}
+                  className="px-2.5 py-1 rounded-lg bg-secondary/80 hover:bg-secondary text-slate-300 hover:text-white text-[11px] font-sans flex items-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <Copy className="w-3 h-3" />
+                  <span>Copy</span>
+                </button>
+              </div>
+              <pre className="p-4 font-mono text-xs text-emerald-400 overflow-x-auto leading-relaxed bg-[#0a0d14]">
+                <code>{codeString}</code>
+              </pre>
+            </div>
           );
           codeBlockContent = [];
           codeLanguage = '';
@@ -2260,7 +2350,7 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
 
           {mode === 'direct' && (
             <div className="flex items-center gap-1 bg-secondary/40 p-1 rounded-xl border border-border/50">
-              {['code', 'research', 'analysis', 'business'].map(a => (
+              {['code', 'ppt_generator', 'business', 'research', 'analysis'].map(a => (
                 <button
                   key={a}
                   onClick={() => setSelectedDirectAgent(a)}
@@ -2279,6 +2369,13 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
         {/* Quick Action Chips */}
         <div className="flex items-center gap-1.5 overflow-x-auto py-1">
           <span className="text-[10px] font-mono uppercase text-muted-foreground hidden sm:inline mr-1">Quick Tasks:</span>
+          <button
+            onClick={() => handleQuickPrompt("Create a stunning 8-slide presentation on Artificial Intelligence in Healthcare with relevant searched images")}
+            className="px-2.5 py-1 rounded-lg bg-secondary/50 hover:bg-secondary text-[11px] font-medium text-amber-300 border border-amber-500/30 transition-all whitespace-nowrap cursor-pointer flex items-center gap-1"
+          >
+            <span>📽️</span>
+            <span>AI PPT Deck</span>
+          </button>
           <button
             onClick={() => handleQuickPrompt("Create a premium landing page HTML with complete CSS styled for a personal portfolio in my website folder")}
             className="px-2.5 py-1 rounded-lg bg-secondary/50 hover:bg-secondary text-[11px] font-medium text-purple-300 border border-purple-500/30 transition-all whitespace-nowrap cursor-pointer flex items-center gap-1"
@@ -2326,7 +2423,7 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
         }}
         onDrop={handleFileDrop}
         className={cn(
-          "flex flex-col lg:flex-row h-full min-h-[820px] lg:min-h-[860px] rounded-2xl border border-border/80 shadow-2xl bg-card overflow-hidden relative transition-all duration-300",
+          "flex flex-col lg:flex-row h-[calc(100vh-140px)] max-h-[calc(100vh-140px)] min-h-[680px] rounded-2xl border border-border/80 shadow-2xl bg-card overflow-hidden relative transition-all duration-300",
           isPlaygroundExtended && "fixed inset-3 md:inset-6 z-50 min-h-0 h-[calc(100vh-1.5rem)] md:h-[calc(100vh-3rem)] ring-2 ring-purple-500/60 shadow-[0_0_90px_rgba(168,85,247,0.4)]",
           (isTyping || isRecording) && "siri-fluid-border-frame shadow-[0_0_30px_rgba(168,85,247,0.35)]"
         )}
@@ -2650,6 +2747,26 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
                           : "bg-card border-border/80 text-foreground"
                       )}
                     >
+                      {/* Screenshot 4: Thought for Xs collapsible dropdown at TOP of message */}
+                      {!isUser && (msg.thinkingProcess || (isTyping && idx === messages.length - 1 && thinkingStream)) && (
+                        <div className="mb-3.5 pb-2.5 border-b border-border/20">
+                          <button
+                            type="button"
+                            onClick={() => toggleThinking(idx)}
+                            className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground font-mono transition-colors group cursor-pointer"
+                          >
+                            <span>
+                              {msg.thinkingProcess ? 'Thought for 10s' : 'Thinking...'}
+                            </span>
+                            <ChevronDown className={cn("w-3.5 h-3.5 transition-transform duration-200 text-muted-foreground", openThinkingIdxs.includes(idx) && "rotate-180")} />
+                          </button>
+                          {openThinkingIdxs.includes(idx) && (
+                            <div className="mt-2.5 pl-3 border-l-2 border-muted-foreground/30 font-sans text-xs text-muted-foreground/90 whitespace-pre-wrap leading-relaxed max-h-[220px] overflow-y-auto animate-in slide-in-from-top-1 duration-200">
+                              {msg.thinkingProcess || thinkingStream}
+                            </div>
+                          )}
+                        </div>
+                      )}
                       {!isUser && showExactTokens ? (
                         <div className="space-y-4">
                           {msg.thinkingTokens && msg.thinkingTokens.length > 0 && (
@@ -2744,28 +2861,7 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
                       )}
 
 
-                      {/* --- Collapsible Dropdown for Agent Thinking Process --- */}
-                      {!isUser && msg.thinkingProcess && (
-                        <div className="mt-4 pt-3 border-t border-border/30">
-                          <button 
-                            onClick={() => setOpenDropdownIdx(openDropdownIdx === (idx + 1000) ? null : (idx + 1000))}
-                            className="font-mono text-xs text-primary/90 hover:text-primary flex items-center gap-1.5 focus:outline-none transition-colors"
-                          >
-                            {openDropdownIdx === (idx + 1000) ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                            <Brain className="w-3.5 h-3.5 text-primary" />
-                            {openDropdownIdx === (idx + 1000) ? "Hide Agent Thinking Process" : "View Agent Thinking Process"}
-                          </button>
 
-                          {openDropdownIdx === (idx + 1000) && (
-                            <div className="mt-2.5 p-3.5 bg-primary/5 border border-primary/20 font-mono text-xs text-muted-foreground whitespace-pre-wrap leading-relaxed max-h-[300px] overflow-y-auto animate-in slide-in-from-top-2 duration-200">
-                              <div className="text-[9px] text-primary/70 uppercase tracking-wider font-bold mb-1.5 border-b border-primary/10 pb-1">
-                                🧠 Deep Reasoning Trace
-                              </div>
-                              {msg.thinkingProcess}
-                            </div>
-                          )}
-                        </div>
-                      )}
 
                       {msg.total_tokens !== undefined && msg.total_tokens > 0 && (
                         <div className="mt-4 pt-2 border-t border-border/20 flex gap-4 text-[10px] font-mono text-muted-foreground uppercase tracking-wider animate-in fade-in duration-300">
@@ -2795,6 +2891,61 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
                           </button>
                         </div>
                       )}
+
+                      {/* Interactive Presentation Deck Card */}
+                      {!isUser && (() => {
+                        const pptxMatch = msg.content?.match(/\/api\/documents\/([a-zA-Z0-9_\-]+\.pptx)/i);
+                        const htmlMatch = msg.content?.match(/\/api\/documents\/([a-zA-Z0-9_\-]+\.html)/i);
+                        const hasPptTool = msg.toolsExecuted?.some(t => t.toolName === 'generate_presentation');
+
+                        if (pptxMatch || htmlMatch || hasPptTool) {
+                          const pptxUrl = pptxMatch ? `http://localhost:8000${pptxMatch[0]}` : null;
+                          const htmlUrl = htmlMatch ? `http://localhost:8000${htmlMatch[0]}` : null;
+                          const deckName = pptxMatch ? pptxMatch[1] : 'presentation.pptx';
+
+                          return (
+                            <div className="mt-3 p-3.5 rounded-2xl bg-gradient-to-r from-amber-950/70 to-slate-900/90 border border-amber-500/40 flex items-center justify-between gap-3 text-xs shadow-lg shadow-amber-500/10 animate-in fade-in duration-200">
+                              <div className="flex items-center gap-3 min-w-0">
+                                <div className="w-9 h-9 rounded-xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-xl shrink-0">
+                                  📽️
+                                </div>
+                                <div className="min-w-0">
+                                  <div className="font-semibold text-amber-200 text-xs flex items-center gap-1.5">
+                                    <span>Presentation Deck Ready</span>
+                                    <span className="px-1.5 py-0.2 rounded-full text-[9px] bg-amber-500/20 text-amber-300 font-mono">.pptx + HTML</span>
+                                  </div>
+                                  <div className="text-[11px] text-amber-400/80 font-mono truncate">{deckName}</div>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2 shrink-0">
+                                {htmlUrl && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setSelectedPresentationModal({ url: htmlUrl, title: 'Interactive Slide Deck' })}
+                                    className="px-2.5 py-1.5 rounded-xl bg-amber-600/40 hover:bg-amber-600/60 text-amber-100 font-semibold text-xs flex items-center gap-1 transition-all border border-amber-400/40 cursor-pointer"
+                                  >
+                                    <Eye className="w-3.5 h-3.5" />
+                                    <span>Preview Deck</span>
+                                  </button>
+                                )}
+                                {pptxUrl && (
+                                  <a
+                                    href={pptxUrl}
+                                    download={deckName}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-semibold text-xs flex items-center gap-1.5 transition-all shadow-md shadow-amber-500/20 whitespace-nowrap cursor-pointer"
+                                  >
+                                    <Download className="w-3.5 h-3.5" />
+                                    <span>Download PPT</span>
+                                  </a>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        }
+                        return null;
+                      })()}
 
                       {/* Interactive Excel Download Card if an Excel file was generated */}
                       {!isUser && (() => {
@@ -3253,7 +3404,67 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
             </div>
 
             {/* PROMPT INPUT */}
-            <div className="p-4 border-t border-border bg-muted/20">
+            <div className="shrink-0 border-t border-border bg-card/95 backdrop-blur-2xl p-4 z-20">
+              {/* Screenshot 5: Edited Files Card directly above prompt input */}
+              {activeEditedFiles.length > 0 && (
+                <div className="mb-3 rounded-2xl bg-[#0f141c] border border-border/70 p-3 shadow-xl animate-in slide-in-from-bottom-2 duration-200">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="w-7 h-7 rounded-lg bg-secondary/80 border border-border/80 flex items-center justify-center text-xs text-muted-foreground shrink-0">
+                        <FileCode className="w-3.5 h-3.5 text-purple-400" />
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-xs text-foreground">
+                          Edited {activeEditedFiles.length} {activeEditedFiles.length === 1 ? 'file' : 'files'}
+                        </span>
+                        <span className="text-[11px] font-mono text-emerald-400 font-bold">
+                          +{activeEditedFiles.reduce((acc, f) => acc + f.additions, 0)}
+                        </span>
+                        <span className="text-[11px] font-mono text-red-400 font-bold">
+                          -{activeEditedFiles.reduce((acc, f) => acc + f.deletions, 0)}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsCanvasOpen(true);
+                          setCanvasActiveTab('code');
+                        }}
+                        className="px-2.5 py-1 rounded-xl bg-secondary/90 hover:bg-secondary text-foreground text-xs font-medium transition-colors cursor-pointer border border-border/60"
+                      >
+                        View changes
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowEditedFilesDropdown(prev => !prev)}
+                        className="p-1 rounded-lg text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+                        title={showEditedFilesDropdown ? "Collapse file details" : "Expand file details"}
+                      >
+                        <ChevronDown className={cn("w-3.5 h-3.5 transition-transform duration-200", showEditedFilesDropdown && "rotate-180")} />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Dropdown file list matching Screenshot 5 */}
+                  {showEditedFilesDropdown && (
+                    <div className="mt-2.5 pt-2.5 border-t border-border/40 space-y-1.5 text-xs font-mono">
+                      {activeEditedFiles.map((file, fIdx) => (
+                        <div key={fIdx} className="flex items-center justify-between text-muted-foreground hover:text-foreground py-0.5 px-1 rounded hover:bg-secondary/30 transition-colors">
+                          <span className="truncate max-w-[280px] sm:max-w-[420px] text-[11px] text-slate-300 font-mono">
+                            {file.path}
+                          </span>
+                          <div className="flex items-center gap-2 shrink-0 text-[10px]">
+                            <span className="text-emerald-400 font-semibold">+{file.additions}</span>
+                            <span className="text-red-400 font-semibold">-{file.deletions}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
               {/* Dropped File Feedback Card */}
               {droppedFileSummary && (
                 <div className="mb-3 p-3 bg-slate-900 border border-purple-500/50 rounded-xl flex items-center justify-between text-xs text-slate-200 gap-3 shadow-md animate-in slide-in-from-bottom-2 duration-200">

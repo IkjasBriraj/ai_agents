@@ -15,6 +15,54 @@ from .session_context import current_agent_context
 logger = logging.getLogger(__name__)
 
 
+def search_and_download_image(query: str, filename: str) -> Optional[str]:
+    """
+    Search for a high-quality real image related to the topic and download it locally.
+    Falls back to local diffusion AI image generation if web search is unavailable.
+    """
+    import os, json, urllib.request, urllib.parse
+    from .config import AGENT_WORKSPACE_DIR
+    from .image_pipeline import generate_image_tool
+
+    img_dir = os.path.join(AGENT_WORKSPACE_DIR, "_generated_images")
+    os.makedirs(img_dir, exist_ok=True)
+    out_path = os.path.join(img_dir, f"{filename}.jpg")
+
+    clean_query = query.strip()
+    if clean_query:
+        try:
+            url = f"https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch={urllib.parse.quote(clean_query)}&gsrnamespace=6&prop=imageinfo&iiprop=url|size&format=json"
+            req = urllib.request.Request(url, headers={'User-Agent': 'SeniorAgent/1.0 (contact@senioragent.org)'})
+            with urllib.request.urlopen(req, timeout=5) as res:
+                data = json.loads(res.read().decode('utf-8'))
+            pages = data.get('query', {}).get('pages', {})
+            for p in pages.values():
+                if 'imageinfo' in p and p['imageinfo']:
+                    img_url = p['imageinfo'][0].get('url')
+                    if img_url and any(img_url.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png']):
+                        d_req = urllib.request.Request(img_url, headers={'User-Agent': 'SeniorAgent/1.0 (contact@senioragent.org)'})
+                        with urllib.request.urlopen(d_req, timeout=7) as d_res:
+                            img_bytes = d_res.read()
+                        if len(img_bytes) > 2048:
+                            with open(out_path, 'wb') as f:
+                                f.write(img_bytes)
+                            logger.info(f"Downloaded topic image from Wikimedia Commons for '{clean_query}': {out_path}")
+                            return out_path
+        except Exception as e:
+            logger.debug(f"Web image search failed for '{clean_query}': {e}. Falling back to AI image generator...")
+
+    # Fallback to local diffusion AI image generator
+    try:
+        generate_image_tool(prompt=f"{clean_query}, high quality professional photograph, 8k", filename=filename)
+        fallback_path = os.path.join(img_dir, f"{filename}.png")
+        if os.path.exists(fallback_path):
+            return fallback_path
+    except Exception:
+        pass
+
+    return None
+
+
 def generate_presentation(
     title: str = "Presentation",
     subtitle: str = "",
@@ -76,28 +124,27 @@ def generate_presentation(
                     {"type": "split_image", "title": "Strategic Execution & Growth", "subtitle": "From Blueprint to Production Execution", "bullets": ["Phase 1: Foundation & Core Infrastructure", "Phase 2: Market Deployment & User Scaling", "Phase 3: Operational Optimization & Growth"], "image_prompt": "A high-tech robotic arm 3D printing a precision mechanical gear on a blueprint grid with technical callout annotations, 8k"}
                 ]
 
-        # Process automated image generation for slides with image_prompt specifications
-        from .image_pipeline import generate_image_tool
+        # Process automated image search and insertion for slides
         for idx, s in enumerate(slides):
-            img_prompt = s.get("image_prompt")
-            if img_prompt and not s.get("image_path"):
+            slide_type = str(s.get("type", "content")).lower()
+            img_search_term = s.get("image_search") or s.get("image_prompt")
+            if not img_search_term and slide_type in ["split_image", "image", "title"]:
+                img_search_term = s.get("title") or title
+            
+            if img_search_term and not s.get("image_path"):
                 try:
-                    # Stream progress notification
                     ctx = current_agent_context.get()
                     if ctx and "queue" in ctx and "loop" in ctx:
                         ctx["loop"].call_soon_threadsafe(
                             ctx["queue"].put_nowait,
-                            {"type": "thinking", "content": f"\n🎨 Generating slide {idx+1} image: '{img_prompt[:60]}...'...\n"}
+                            {"type": "thinking", "content": f"\n🖼️ Searching and embedding slide {idx+1} image for: '{img_search_term[:50]}'\n"}
                         )
                     img_name = f"{safe_name}_slide_{idx+1}"
-                    img_res = generate_image_tool(prompt=img_prompt, filename=img_name)
-                    
-                    # Extract saved image path
-                    generated_img_path = os.path.join(AGENT_WORKSPACE_DIR, "_generated_images", f"{img_name}.png")
-                    if os.path.exists(generated_img_path):
-                        s["image_path"] = generated_img_path
+                    found_img = search_and_download_image(img_search_term, img_name)
+                    if found_img and os.path.exists(found_img):
+                        s["image_path"] = found_img
                 except Exception as img_err:
-                    logger.error("Error generating slide image: %s", img_err)
+                    logger.error("Error searching and embedding slide image: %s", img_err)
 
         spec = {
             "title": title,

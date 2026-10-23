@@ -3772,12 +3772,75 @@ def get_business_agent_tools() -> List[StructuredTool]:
     ] + _get_knowledge_and_utility_tools()
 
 
+def get_ppt_generator_tools() -> List[StructuredTool]:
+    """Get tools for PPT Generator Agent"""
+    from .business_tools import generate_presentation
+    return [
+        StructuredTool.from_function(
+            name="generate_presentation",
+            func=lambda x: generate_presentation(
+                safe_parse_input(x).get("title", "Presentation"),
+                safe_parse_input(x).get("subtitle", ""),
+                safe_parse_input(x).get("slides_json", safe_parse_input(x).get("slides", "")),
+                safe_parse_input(x).get("theme_color", "#1E3A8A"),
+                safe_parse_input(x).get("filename", "presentation")
+            ),
+            description="Generate a professional PowerPoint presentation (.pptx) AND interactive HTML slide deck (.html) with topic-searched images, metric cards, and process diagrams. Input: dict with 'title', optional 'subtitle', 'slides_json' (JSON string of slide objects), optional 'theme_color', optional 'filename'."
+        ),
+        StructuredTool.from_function(
+            name="generate_image",
+            func=lambda x: _generate_image_wrapper(
+                safe_parse_input(x).get("prompt", x if isinstance(x, str) else ""),
+                safe_parse_input(x).get("negative_prompt", ""),
+                int(safe_parse_input(x).get("width", 1024)),
+                int(safe_parse_input(x).get("height", 1024)),
+                safe_parse_input(x).get("model", "auto"),
+                safe_parse_input(x).get("seed", None),
+                safe_parse_input(x).get("filename", "generated_image"),
+            ),
+            description="Generate an image using AI diffusion models (SDXL, SD1.5, FLUX). Input: dict with 'prompt', optional 'negative_prompt', 'width', 'height', 'filename'."
+        ),
+        StructuredTool.from_function(
+            name="web_search",
+            func=lambda x: web_search(
+                safe_parse_input(x).get("query", x if isinstance(x, str) else ""),
+                int(safe_parse_input(x).get("num_results", 5))
+            ),
+            description="Search the web for real-world statistics, facts, and content on any topic to include in the presentation."
+        ),
+        StructuredTool.from_function(
+            name="fetch_web_page",
+            func=lambda x: fetch_web_page(safe_parse_input(x).get("url", x if isinstance(x, str) else "")),
+            description="Fetch clean text content from web URLs."
+        ),
+        StructuredTool.from_function(
+            name="update_todo_list",
+            func=lambda x: update_todo_list(
+                safe_parse_input(x).get("items", safe_parse_input(x).get("todo_list", x))
+            ),
+            description="Update the real-time To-Do task list for the user."
+        ),
+        StructuredTool.from_function(
+            name="file_operation",
+            func=lambda x: file_operation(
+                safe_parse_input(x).get("operation", "read"),
+                safe_parse_input(x).get("path", ""),
+                safe_parse_input(x).get("content", "")
+            ),
+            description="Perform file operations in workspace (read, write)."
+        )
+    ] + _get_knowledge_and_utility_tools()
+
+
 # Tool registry
 AGENT_TOOLS = {
     "code": get_code_agent_tools,
     "research": get_research_agent_tools,
     "analysis": get_analysis_agent_tools,
     "business": get_business_agent_tools,
+    "ppt_generator": get_ppt_generator_tools,
+    "ppt-generater": get_ppt_generator_tools,
+    "presentation": get_ppt_generator_tools,
 }
 
 
@@ -3802,6 +3865,7 @@ def get_tools_by_names(tool_names: List[str]) -> List[StructuredTool]:
     all_system_tools.extend(get_research_agent_tools())
     all_system_tools.extend(get_analysis_agent_tools())
     all_system_tools.extend(get_business_agent_tools())
+    all_system_tools.extend(get_ppt_generator_tools())
     all_system_tools.append(delegate_to_sub_agent)
     
     seen = set()

@@ -244,6 +244,17 @@ You have full authority to analyze any user request, evaluate the catalog of ava
                 "built_in": True,
             },
             {
+                "id": "ppt_generator",
+                "name": "PPT & Presentation Generator Worker",
+                "role": "Master Presentation Architect, Slide Designer & Visual Storyteller",
+                "capabilities": (
+                    "Generates professional, visually engaging PowerPoint presentations (.pptx) and interactive HTML slide decks (.html) "
+                    "on ANY topic requested by the user. Automatically searches for topic-relevant images and photos and embeds them into the slides."
+                ),
+                "tools": ["generate_presentation", "web_search", "generate_image", "update_todo_list", "file_operation"],
+                "built_in": True,
+            },
+            {
                 "id": "general",
                 "name": "Direct Orchestrator Assistant",
                 "role": "Conversational AI & General Knowledge Advisor",
@@ -286,7 +297,9 @@ You have full authority to analyze any user request, evaluate the catalog of ava
     def _fallback_semantic_route(self, user_request: str, valid_ids: List[str]) -> Dict[str, Any]:
         """Fallback routing ONLY used if the LLM server is unreachable."""
         req_lower = user_request.lower()
-        if any(k in req_lower for k in ["csv", "spreadsheet", "excel", "xlsx", "financial", "business plan", "revenue", "budget", "presentation", "ppt", "slides", "pitch deck", "generate image", "create image", "draw "]):
+        if any(k in req_lower for k in ["ppt", "presentation", "powerpoint", "slide", "slides", "deck", "pitch deck", "ppt-generater", "ppt generator"]):
+            wid = "ppt_generator"
+        elif any(k in req_lower for k in ["csv", "spreadsheet", "excel", "xlsx", "financial", "business plan", "revenue", "budget", "generate image", "create image", "draw "]):
             wid = "business"
         elif any(k in req_lower for k in ["fix", "debug", "broken", "not working", "change the", "modify the", "update the", "refactor"]):
             wid = "analyze_and_fix"
@@ -412,8 +425,9 @@ DECISION GUIDELINES (GENERIC INTENT ANALYSIS):
 - Spawn "code" when the user wants to build/create new software, websites, apps, scripts, write new files, run terminal commands, or schedule recurring tasks.
 - Spawn "analyze_and_fix" when the user wants to fix bugs/errors/crashes OR modify, update, restyle, or improve existing files/code.
 - Spawn "analysis" when the user ONLY wants a code review, static analysis, or security/performance audit of code WITHOUT modifying files.
+- Spawn "ppt_generator" when the user wants PowerPoint presentations, slide decks, pitch decks, PPTs, or slideshows on ANY topic (with searched images).
 - Spawn "research" when the user wants information gathering, web searches, comparisons, explanations of topics, or industry research.
-- Spawn "business" when the user wants spreadsheets (CSV/Excel), financial models, business plans, slide presentations (PPTX/HTML), or AI image generation.
+- Spawn "business" when the user wants spreadsheets (CSV/Excel), financial models, business plans, or AI image generation.
 - Spawn any custom worker from the catalog if its specialized persona/capabilities best match the user's request.
 - Spawn "general" ONLY for casual greetings or simple chat that requires no specialized worker.
 

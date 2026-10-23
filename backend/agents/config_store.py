@@ -13,7 +13,9 @@ DEFAULT_CONFIG = {
         "code": ["generate_image", "execute_code", "generate_code", "file_operation", "recursive_list", "grep_search", "create_project", "analyze_code", "execute_terminal", "schedule_task", "verify_app_browser_console", "browser_open_url", "browser_get_console_errors", "browser_take_screenshot", "browser_vision_audit"],
         "research": ["web_search", "summarize_text"],
         "analysis": ["analyze_code", "file_operation", "recursive_list", "grep_search", "verify_app_browser_console", "browser_open_url", "browser_get_console_errors", "browser_take_screenshot", "browser_vision_audit"],
-        "business": ["generate_image", "web_search", "fetch_web_page", "generate_presentation", "generate_excel_sheet", "read_excel_sheet", "csv_sheet_operation", "file_operation"]
+        "business": ["generate_image", "web_search", "fetch_web_page", "generate_presentation", "generate_excel_sheet", "read_excel_sheet", "csv_sheet_operation", "file_operation"],
+        "ppt_generator": ["generate_presentation", "generate_image", "web_search", "fetch_web_page", "update_todo_list", "file_operation"],
+        "ppt-generater": ["generate_presentation", "generate_image", "web_search", "fetch_web_page", "update_todo_list", "file_operation"]
     },
     "allowed_paths": [],
     "allowed_commands": [],

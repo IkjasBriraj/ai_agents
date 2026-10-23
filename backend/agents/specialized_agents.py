@@ -1178,6 +1178,26 @@ Thought: {{agent_scratchpad}}"""
                 except Exception as fw_err:
                     print(f"[FALLBACK FILE WRITER] Error writing parsed files: {fw_err}")
 
+                        # Direct PPT Generation Fallback: If PPT Generator or Business Agent ran on a presentation task but created 0 files
+            is_ppt_task = (self.agent_type in ["ppt_generator", "ppt-generater", "presentation", "business"]) and any(
+                w in task.lower() for w in ["ppt", "presentation", "powerpoint", "slide", "slides", "pitch deck"]
+            )
+            if is_ppt_task and no_files_modified:
+                print(f"[DIRECT PPT WRITER] Agent modified 0 files for presentation task: '{task[:80]}'. Generating presentation deck automatically...")
+                try:
+                    from .business_tools import generate_presentation
+                    clean_title = re.sub(r'[^a-zA-Z0-9 ]', '', task.split('\n')[0])[:50].strip() or "Executive Presentation"
+                    clean_file = re.sub(r'[^a-zA-Z0-9_]', '_', clean_title.lower()).strip('_')[:30] or "presentation"
+                    res = generate_presentation(title=clean_title, filename=clean_file)
+                    print(f"[DIRECT PPT WRITER] Created Presentation file: {res}")
+                    no_files_modified = False
+                    if not output_text or "Agent stopped" in output_text or len(output_text) < 40:
+                        output_text = f"### [Presentation Deck Generated Successfully]\n\n{res}"
+                    else:
+                        output_text += f"\n\n---\n### [Presentation Deck Generated]\n{res}"
+                except Exception as ppt_err:
+                    print(f"[DIRECT PPT WRITER] Error in PPT fallback generation: {ppt_err}")
+
             # Direct Excel Generation Fallback: If Business Agent ran on an excel/spreadsheet task but created 0 files on disk
             is_excel_task = self.agent_type == "business" and any(
                 w in task.lower() for w in ["excel", "spreadsheet", "xlsx", "financial model", "budget sheet", "sales sheet"]
@@ -1690,12 +1710,52 @@ class CustomSpecializedAgent(BaseSpecializedAgent):
         )
 
 
+class PPTGeneratorAgent(BaseSpecializedAgent):
+    """Specialized presentation design architect that creates high-end PowerPoint (.pptx) decks and interactive HTML slide decks on any topic with relevant searched images."""
+    def __init__(self, model_name: str = DEFAULT_MAIN_MODEL, ollama_base_url: str = "http://localhost:11434"):
+        system_prompt = f"""You are the Master Presentation Designer & PPT Generator Agent ("PPT-generater").
+You create executive-grade, visually engaging PowerPoint presentations (.pptx) AND interactive HTML slide decks (.html) on ANY topic requested by the user, with automatic topic-relevant image searches and insertions.
+
+{get_workspace_instructions()}
+
+### CORE MANDATE:
+1. 100% TOPIC ADAPTATION: You design presentations for ANY topic the user provides (e.g. Science, Space, AI, Healthcare, History, Sports, Cars, Renewable Energy, Economics, Gaming, School Projects, etc.).
+2. STRUCTURED SLIDE DECKS: Every presentation MUST have 5 to 15 rich, well-crafted slides including:
+   - Slide 1: `title` slide with a compelling title, executive subtitle, and cover image.
+   - Core slides: `content` (with 3-5 informative bullet points), `split_image` (with text on the left and an `image_search` query on the right), `metrics` (with 3-4 quantitative KPI cards), or `pipeline`/`process` (with step-by-step arrows).
+   - Closing slide: `content` summarizing key takeaways and next steps.
+3. IMAGE SEARCH & EMBEDDING: For visual slides (`split_image`, `image`, or `title`), specify `"image_search": "<clear 2-4 word topic search query>"` so relevant high-resolution photos and diagrams are automatically found and embedded into the slide deck!
+4. IMMEDIATE TOOL EXECUTION: When the user asks for a PPT or presentation, YOU MUST IMMEDIATELY CALL `generate_presentation` with full JSON slide specifications. Never respond with only an outline in text without generating the real .pptx file.
+
+EXPLICIT TOOL CALL FORMAT FOR PPT GENERATION:
+Action: generate_presentation
+Action Input: {{"title": "<Presentation Title>", "subtitle": "<Executive Subtitle>", "theme_color": "#1E3A8A", "filename": "<clean_filename>", "slides_json": "[{{\"type\": \"title\", \"title\": \"<Presentation Title>\", \"subtitle\": \"<Executive Subtitle>\", \"image_search\": \"<topic keywords>\"}}, {{"type\": \"content\", \"title\": \"<Executive Overview>\", \"bullets\": [\"<Key Insight 1>\", \"<Key Insight 2>\", \"<Key Insight 3>\"]}}, {{"type\": \"split_image\", \"title\": \"<Core Deep Dive>\", \"subtitle\": \"<Analysis & Context>\", \"bullets\": [\"<Detail 1>\", \"<Detail 2>\", \"<Detail 3>\"], \"image_search\": \"<specific visual subject>\"}}, {{"type\": \"metrics\", \"title\": \"<Key Metrics & Milestones>\", \"metrics\": [{{\"label\": \"<Metric A>\", \"value\": \"<Value A>\"}}, {{\"label\": \"<Metric B>\", \"value\": \"<Value B>\"}}]}}, {{"type\": \"content\", \"title\": \"<Summary & Future Roadmap>\", \"bullets\": [\"<Conclusion 1>\", \"<Conclusion 2>\"]}}]"}}
+
+Tools YOU MUST USE:
+1. generate_presentation - Generate PowerPoint (.pptx) AND interactive HTML Reveal.js slide deck with embedded images
+2. web_search - Search for statistics, real-world data, or facts on the presentation topic
+3. generate_image - Generate AI concept art or diagrams if needed
+4. update_todo_list - Track progress across slide creation and image insertion
+5. file_operation - Inspect or write documents
+"""
+        super().__init__(
+            name="PPT Generator",
+            agent_type="ppt_generator",
+            system_prompt=system_prompt,
+            model_name=model_name,
+            ollama_base_url=ollama_base_url
+        )
+
+
 # Agent registry
 SPECIALIZED_AGENTS = {
     "code": CodeAgent,
     "research": ResearchAgent,
     "analysis": AnalysisAgent,
     "business": BusinessAgent,
+    "ppt_generator": PPTGeneratorAgent,
+    "ppt-generater": PPTGeneratorAgent,
+    "presentation": PPTGeneratorAgent,
 }
 
 def create_specialized_agent(

@@ -55,6 +55,22 @@
       "read_excel_sheet",
       "csv_sheet_operation",
       "file_operation"
+    ],
+    "ppt_generator": [
+      "generate_presentation",
+      "generate_image",
+      "web_search",
+      "fetch_web_page",
+      "update_todo_list",
+      "file_operation"
+    ],
+    "ppt-generater": [
+      "generate_presentation",
+      "generate_image",
+      "web_search",
+      "fetch_web_page",
+      "update_todo_list",
+      "file_operation"
     ]
   },
   "allowed_paths": [
