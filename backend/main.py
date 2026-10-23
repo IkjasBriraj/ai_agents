@@ -449,6 +449,9 @@ os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
 os.makedirs(DOCUMENTS_DIR, exist_ok=True)
 app.mount("/api/screenshots", StaticFiles(directory=SCREENSHOTS_DIR), name="screenshots")
 app.mount("/api/documents", StaticFiles(directory=DOCUMENTS_DIR), name="documents")
+from agents.config import AGENT_WORKSPACE_DIR
+os.makedirs(AGENT_WORKSPACE_DIR, exist_ok=True)
+app.mount("/api/workspace/live", StaticFiles(directory=AGENT_WORKSPACE_DIR, html=True), name="workspace_live")
 
 # Mount built frontend static files if present (for single container deployment)
 frontend_dist = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend", "dist"))

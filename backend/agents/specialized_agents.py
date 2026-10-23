@@ -1,5 +1,7 @@
 import os
 import sys
+if hasattr(sys.stdout, "reconfigure"): sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"): sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 import time
 import re
 import asyncio
@@ -1176,6 +1178,29 @@ Thought: {{agent_scratchpad}}"""
                 except Exception as fw_err:
                     print(f"[FALLBACK FILE WRITER] Error writing parsed files: {fw_err}")
 
+            # Direct Excel Generation Fallback: If Business Agent ran on an excel/spreadsheet task but created 0 files on disk
+            is_excel_task = self.agent_type == "business" and any(
+                w in task.lower() for w in ["excel", "spreadsheet", "xlsx", "financial model", "budget sheet", "sales sheet"]
+            )
+            if is_excel_task and no_files_modified:
+                print(f"[DIRECT EXCEL WRITER] Business Agent modified 0 files for task: '{task[:80]}'. Generating Excel workbook automatically...")
+                try:
+                    from .business_tools import generate_excel_sheet
+                    # Extract clean title from task
+                    clean_title = re.sub(r'[^a-zA-Z0-9 ]', '', task.split('\n')[0])[:40].strip() or "Business Model Spreadsheet"
+                    clean_file = re.sub(r'[^a-zA-Z0-9_]', '_', clean_title.lower()).strip('_')[:30] or "spreadsheet"
+                    
+                    # Call generate_excel_sheet
+                    res = generate_excel_sheet(title=clean_title, filename=clean_file)
+                    print(f"[DIRECT EXCEL WRITER] Created Excel file: {res}")
+                    no_files_modified = False
+                    if not output_text or "Agent stopped" in output_text or len(output_text) < 40:
+                        output_text = f"### [Excel Workbook Created Successfully]\n\n{res}"
+                    else:
+                        output_text += f"\n\n---\n### [Excel Workbook Generated]\n{res}"
+                except Exception as ex_err:
+                    print(f"[DIRECT EXCEL WRITER] Error in Excel fallback generation: {ex_err}")
+
             # Direct Polyglot Code Generation Fallback: If Code Agent ran on a file-creation task but modified 0 files on disk
             is_explanatory_only = bool(re.match(r'^\s*(explain|what\s+is|how\s+does|describe|compare)\b', task.split("\n")[-1], re.IGNORECASE)) and not any(
                 w in task.lower() for w in ["write", "create", "build", "make", "implement", "generate", "fix", "update", "refactor", "file", "app", "script", "code"]
@@ -1570,7 +1595,7 @@ CRITICAL RULES FOR TOOL USAGE & TOPIC ALIGNMENT:
 1. IMAGE GENERATION MANDATE: When asked to generate, create, draw, or render an image, picture, photo, concept art, or illustration, IMMEDIATELY call `generate_image` with a detailed prompt and parameters!
 2. STRICT TOPIC MATCHING MANDATE: When asked for a presentation or spreadsheet on ANY topic (e.g. Space, Astronomy, Solar System, AI, Healthcare, History, Automotive, Energy), the presentation title, slide titles, bullet points, metrics, and theme color MUST BE 100% SPECIFIC TO THAT TOPIC!
 3. REAL-WORLD DATA MANDATE: When asked for a presentation or spreadsheet involving real companies, stock prices, or industry statistics, FIRST call `web_search` to retrieve authentic data figures, then incorporate them into `generate_excel_sheet` or `generate_presentation`.
-4. SPREADSHEET MANDATE: When asked to create a spreadsheet, Excel model, or financial sheet, YOU MUST ALWAYS CALL `generate_excel_sheet` IMMEDIATELY using the Action/Action Input format below.
+4. EXCEL & SPREADSHEET MANDATE: When asked to create an Excel file, spreadsheet, table, budget, financial forecast, or .xlsx sheet on ANY topic, YOU MUST IMMEDIATELY CALL `generate_excel_sheet`. Never output just a markdown table or textual description without creating the real .xlsx file on disk. Use real or realistic domain numbers, headers, and formulas (=SUM, =AVERAGE).
 5. PRESENTATION DECK MANDATE: When asked to create a presentation, slide deck, or pitch deck, ALWAYS call `generate_presentation` with slide specifications. Every deck MUST have between 4 and 30 slides.
 
 EXPLICIT TOOL CALL FORMAT FOR IMAGE GENERATION:
@@ -1581,9 +1606,9 @@ EXPLICIT TOOL CALL FORMAT FOR SPREADSHEETS:
 Action: generate_excel_sheet
 Action Input: {{"title": "Financial Spreadsheet", "filename": "financial_spreadsheet", "sheets_json": "[{{\"name\": \"Overview\", \"title\": \"Financial Overview\", \"headers\": [\"Metric\", \"Q1 ($)\", \"Q2 ($)\", \"Q3 ($)\", \"Total ($)\"], \"data\": [[\"Revenue\", 120000, 145000, 160000, \"=SUM(B2:D2)\"], [\"Expenses\", 85000, 92000, 98000, \"=SUM(B3:D3)\"], [\"Net Income\", \"=B2-B3\", \"=C2-C3\", \"=D2-D3\", \"=E2-E3\"]]}}]"}}
 
-EXPLICIT TOOL CALL FORMAT FOR SPACE PRESENTATION:
+EXPLICIT TOOL CALL FORMAT FOR PRESENTATIONS:
 Action: generate_presentation
-Action Input: {{"title": "Journey Through Space and Cosmos", "subtitle": "An Exploration of the Infinite Universe", "theme_color": "#0B0F19", "filename": "space_presentation", "slides_json": "[{{\"type\": \"title\", \"title\": \"Journey Through Space and Cosmos\", \"subtitle\": \"An Exploration of the Infinite Universe\"}}, {{\"type\": \"content\", \"title\": \"The Solar System\", \"bullets\": [\"Inner Planets: Mercury, Venus, Earth, Mars\", \"Outer Gas Giants: Jupiter, Saturn, Uranus, Neptune\", \"Kuiper Belt & Oort Cloud Boundaries\"]}}, {{\"type\": \"metrics\", \"title\": \"Cosmic Scale & Metrics\", \"metrics\": [{{\"label\": \"Observable Universe\", \"value\": \"93B Light Yrs\"}}, {{\\"label\\": \"Milky Way Stars\", \"value\": \"100B+\"}}]}}, {{\"type\": \"content\", \"title\": \"Deep Space & Galaxies\", \"bullets\": [\"Stellar Nurseries & Nebulae\", \"Black Holes & Gravitational Event Horizons\", \"Spiral & Elliptical Galaxies\"]}}, {{\"type\": \"content\", \"title\": \"Human Space Exploration\", \"bullets\": [\"Apollo & Artemis Lunar Missions\", \"Mars Rovers & Outer Solar System Probes\", \"James Webb Space Telescope (JWST) Deep Field\"]}}]"}}
+Action Input: {{"title": "<Presentation Title>", "subtitle": "<Executive Subtitle>", "theme_color": "#1E293B", "filename": "<clean_filename>", "slides_json": "[{{\"type\": \"title\", \"title\": \"<Presentation Title>\", \"subtitle\": \"<Executive Subtitle>\"}}, {{"type\": \"content\", \"title\": \"<Key Topic Area>\", \"bullets\": [\"<Core Insight 1>\", \"<Core Insight 2>\", \"<Core Insight 3>\"]}}, {{"type\": \"metrics\", \"title\": \"<Key Metrics & KPIs>\", \"metrics\": [{{\"label\": \"<Metric 1>\", \"value\": \"<Value 1>\"}}, {{\"label\": \"<Metric 2>\", \"value\": \"<Value 2>\"}}]}}, {{"type\": \"content\", \"title\": \"<Strategic Next Steps>\", \"bullets\": [\"<Actionable item 1>\", \"<Actionable item 2>\"]}}]"}}
 
 Tools YOU MUST USE:
 1. generate_image - Generate high-quality AI images using local diffusion models (SDXL, SD1.5, FLUX)

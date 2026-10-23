@@ -58,6 +58,7 @@ interface AgentCanvasRightPaneProps {
     category?: string;
   }>;
   onOpenMemoryVault?: () => void;
+  onReloadApp?: () => void;
 }
 
 export const AgentCanvasRightPane: React.FC<AgentCanvasRightPaneProps> = ({
@@ -74,7 +75,8 @@ export const AgentCanvasRightPane: React.FC<AgentCanvasRightPaneProps> = ({
   toolsExecuted = [],
   memoriesRecalled = [],
   memoriesSaved = [],
-  onOpenMemoryVault
+  onOpenMemoryVault,
+  onReloadApp
 }) => {
   // Device Viewport for Preview
   const [deviceViewport, setDeviceViewport] = useState<'desktop' | 'laptop' | 'tablet' | 'mobile'>('desktop');
@@ -111,13 +113,20 @@ export const AgentCanvasRightPane: React.FC<AgentCanvasRightPaneProps> = ({
     }
   };
 
+  // Formatted srcDoc with base tag pointing to live workspace server
+  const formattedSrcDoc = React.useMemo(() => {
+    if (!previewHtml) return undefined;
+    const baseTag = '<base href="http://localhost:8000/api/workspace/live/">';
+    if (previewHtml.includes('<base')) return previewHtml;
+    if (previewHtml.includes('<head>')) {
+      return previewHtml.replace('<head>', `<head>${baseTag}`);
+    }
+    return `<head>${baseTag}</head>${previewHtml}`;
+  }, [previewHtml]);
+
   // Open Preview in External Window
   const handleOpenExternal = () => {
-    const htmlToOpen = previewHtml || codeSnippet;
-    if (!htmlToOpen) return;
-    const blob = new Blob([htmlToOpen], { type: 'text/html' });
-    const url = URL.createObjectURL(blob);
-    window.open(url, '_blank');
+    window.open('http://localhost:8000/api/workspace/live/index.html', '_blank');
   };
 
   // Todo Completion Statistics
@@ -294,18 +303,30 @@ export const AgentCanvasRightPane: React.FC<AgentCanvasRightPaneProps> = ({
 
               {/* Status and External Actions */}
               <div className="flex items-center gap-2">
+                <a
+                  href="http://localhost:8000/api/workspace/live/index.html"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="hidden sm:flex items-center gap-1.5 text-[11px] font-mono px-2.5 py-1 rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/25 hover:bg-emerald-500/20 transition-all cursor-pointer"
+                  title="Direct Workspace Live Server: http://localhost:8000/api/workspace/live/index.html"
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  <span>Live App (Port 8000)</span>
+                </a>
                 <button
-                  onClick={() => setRefreshKey(prev => prev + 1)}
-                  className="p-1.5 rounded-lg hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
-                  title="Reload Preview Sandbox"
+                  onClick={() => {
+                    setRefreshKey(prev => prev + 1);
+                    onReloadApp?.();
+                  }}
+                  className="p-1.5 rounded-xl hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+                  title="Reload Live App Sandbox"
                 >
                   <RefreshCw className="w-3.5 h-3.5" />
                 </button>
                 <button
                   onClick={handleOpenExternal}
-                  disabled={!previewHtml && !codeSnippet}
-                  className="p-1.5 rounded-lg hover:bg-secondary text-muted-foreground hover:text-foreground disabled:opacity-30 transition-colors cursor-pointer"
-                  title="Open Preview in New Tab"
+                  className="p-1.5 rounded-xl hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+                  title="Open App in New Browser Tab"
                 >
                   <ExternalLink className="w-3.5 h-3.5" />
                 </button>
@@ -320,12 +341,13 @@ export const AgentCanvasRightPane: React.FC<AgentCanvasRightPaneProps> = ({
                   getViewportWidth()
                 )}
               >
-                {previewHtml ? (
+                {previewHtml || true ? (
                   <iframe
                     key={refreshKey}
                     ref={iframeRef}
                     title="Live Agent Component Preview"
-                    srcDoc={previewHtml}
+                    srcDoc={formattedSrcDoc}
+                    src={!previewHtml ? `http://localhost:8000/api/workspace/live/index.html?t=${refreshKey}` : undefined}
                     sandbox="allow-scripts allow-modals allow-forms allow-same-origin"
                     className="w-full h-full border-none bg-white dark:bg-slate-950"
                   />

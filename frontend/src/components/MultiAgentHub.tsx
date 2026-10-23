@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { OllamaService, multiAgentService } from '@/services/ollama';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -312,6 +312,27 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
     }
     return null;
   }, [messages]);
+
+  // Refresh live app from workspace directory
+  const refreshWorkspaceApp = useCallback(async () => {
+    try {
+      const res = await OllamaService.getWorkspaceFile('index.html');
+      if (res && res.content && res.content.trim().length > 20) {
+        setActivePreviewHtml(res.content);
+        setActiveCodeSnippet(res.content);
+        setActiveCodeFilename('workspace/index.html');
+        return true;
+      }
+    } catch (err) {
+      // index.html may not exist yet
+    }
+    return false;
+  }, []);
+
+  // Automatically load existing workspace app on mount
+  useEffect(() => {
+    refreshWorkspaceApp();
+  }, [refreshWorkspaceApp]);
 
   // Live Real-Time Canvas Content Extractor (matches even while streaming)
   const updateCanvasFromContent = (text: string, forcePreview: boolean = false) => {
@@ -1351,9 +1372,37 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
             } else if (event.type === 'tool_start' && event.tool) {
               setActiveTool(event.tool);
               
-              // If file_operation is writing a file, update canvas live immediately
+              // If create_project or file_operation is writing files, update canvas live immediately
               try {
-                if (event.tool === 'file_operation' || (event.tool_input && String(event.tool_input).includes('file_operation'))) {
+                if (event.tool === 'create_project') {
+                  let raw = event.tool_input;
+                  if (typeof raw === 'string' && raw.trim().startsWith('{')) {
+                    try { raw = JSON.parse(raw); } catch {}
+                  }
+                  if (raw && typeof raw === 'object') {
+                    if (raw['index.html']) {
+                      const fc = raw['index.html'];
+                      setActiveCodeSnippet(fc);
+                      setActiveCodeFilename('workspace/index.html');
+                      setActivePreviewHtml(fc);
+                      setCanvasActiveTab('preview');
+                      setIsCanvasOpen(true);
+                    } else {
+                      const keys = Object.keys(raw);
+                      if (keys.length > 0) {
+                        const fk = keys[0];
+                        const fc = raw[fk];
+                        setActiveCodeSnippet(fc);
+                        setActiveCodeFilename(`workspace/${fk}`);
+                        if (fk.endsWith('.html')) {
+                          setActivePreviewHtml(fc);
+                          setCanvasActiveTab('preview');
+                          setIsCanvasOpen(true);
+                        }
+                      }
+                    }
+                  }
+                } else if (event.tool === 'file_operation' || (event.tool_input && String(event.tool_input).includes('file_operation'))) {
                   let raw = event.tool_input;
                   if (typeof raw === 'string' && raw.trim().startsWith('{')) {
                     raw = JSON.parse(raw);
@@ -1366,6 +1415,7 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
                     if (fp.endsWith('.html') || fc.includes('<html') || fc.includes('<!DOCTYPE') || fc.includes('<div')) {
                       setActivePreviewHtml(fc);
                       setCanvasActiveTab('preview');
+                      setIsCanvasOpen(true);
                     }
                   }
                 }
@@ -1431,6 +1481,8 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
               if (event.output) {
                 updateCanvasFromContent(typeof event.output === 'string' ? event.output : JSON.stringify(event.output));
               }
+              // Refresh workspace app if project files or html were touched
+              refreshWorkspaceApp();
               
               // Update last pending tool to success
               const pendingIdx = liveTools.map(t => t.status).lastIndexOf('pending');
@@ -1479,18 +1531,30 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
                 });
               }
             } else if (event.type === 'plan_request') {
-              setPendingPlanApproval({
-                planContent: event.plan_content,
-                planPath: event.plan_path,
-                sessionId: event.session_id || 'default'
-              });
+              if (event.require_approval && !event.auto_approved) {
+                setPendingPlanApproval({
+                  planContent: event.plan_content,
+                  planPath: event.plan_path,
+                  sessionId: event.session_id || 'default'
+                });
+                setActivePlanContent({
+                  planContent: event.plan_content,
+                  planPath: event.plan_path
+                });
+                setEditedPlanContent(event.plan_content);
+                setIsPlanModalOpen(true);
+                setActivePlanTab('preview');
+              } else {
+                setActivePlanContent({
+                  planContent: event.plan_content,
+                  planPath: event.plan_path
+                });
+              }
+            } else if (event.type === 'plan_info') {
               setActivePlanContent({
                 planContent: event.plan_content,
                 planPath: event.plan_path
               });
-              setEditedPlanContent(event.plan_content);
-              setIsPlanModalOpen(true);
-              setActivePlanTab('preview');
             } else if (event.type === 'terminal_output' && event.content) {
               setTerminalLines(prev => [...prev, event.content]);
               if (!showTerminal) setShowTerminal(true);
@@ -1584,6 +1648,7 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
                   updateLastAssistantMessage({ thinkingProcess: localThinkingTokens.join('') });
                 }
                 setTodoItems(prev => prev.map(t => ({ ...t, status: 'completed' })));
+                refreshWorkspaceApp();
                 finalizeResponse();
               } else {
                 hasStreamedResponse = true;
@@ -2731,6 +2796,83 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
                         </div>
                       )}
 
+                      {/* Interactive Excel Download Card if an Excel file was generated */}
+                      {!isUser && (() => {
+                        const xlsxMatch = msg.content?.match(/\/api\/documents\/([a-zA-Z0-9_\-]+\.xlsx)/i) ||
+                          msg.content?.match(/`?([a-zA-Z0-9_\-]+\.xlsx)`?/i);
+                        const xlsxName = xlsxMatch ? xlsxMatch[1] : null;
+                        const hasExcelTool = msg.toolsExecuted?.some(t => t.toolName === 'generate_excel_sheet');
+
+                        if (xlsxName || hasExcelTool) {
+                          const safeFile = xlsxName || 'spreadsheet.xlsx';
+                          const dlUrl = `http://localhost:8000/api/documents/${safeFile}`;
+                          return (
+                            <div className="mt-3 p-3.5 rounded-2xl bg-gradient-to-r from-emerald-950/70 to-slate-900/90 border border-emerald-500/40 flex items-center justify-between gap-3 text-xs shadow-lg shadow-emerald-500/10 animate-in fade-in duration-200">
+                              <div className="flex items-center gap-3 min-w-0">
+                                <div className="w-9 h-9 rounded-xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-xl shrink-0">
+                                  📊
+                                </div>
+                                <div className="min-w-0">
+                                  <div className="font-semibold text-emerald-200 text-xs flex items-center gap-1.5">
+                                    <span>Excel Workbook Ready</span>
+                                    <span className="px-1.5 py-0.2 rounded-full text-[9px] bg-emerald-500/20 text-emerald-300 font-mono">.xlsx</span>
+                                  </div>
+                                  <div className="text-[11px] text-emerald-400/80 font-mono truncate">{safeFile}</div>
+                                </div>
+                              </div>
+                              <a
+                                href={dlUrl}
+                                download={safeFile}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs flex items-center gap-1.5 transition-all shadow-md shadow-emerald-500/20 whitespace-nowrap cursor-pointer shrink-0"
+                              >
+                                <Download className="w-3.5 h-3.5" />
+                                <span>Download Excel</span>
+                              </a>
+                            </div>
+                          );
+                        }
+                        return null;
+                      })()}
+
+                      {/* Interactive Live App Launch Card if an HTML app was created */}
+                      {!isUser && (msg.content?.includes('index.html') || msg.toolsExecuted?.some(t => t.target?.includes('index.html') || t.toolName === 'create_project')) && (
+                        <div className="mt-3 p-3 rounded-2xl bg-gradient-to-r from-purple-950/70 to-slate-900/90 border border-purple-500/40 flex items-center justify-between gap-3 text-xs shadow-lg shadow-purple-500/10 animate-in fade-in duration-200">
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <div className="w-8 h-8 rounded-xl bg-purple-500/20 border border-purple-500/40 flex items-center justify-center text-lg shrink-0">
+                              🚀
+                            </div>
+                            <div className="min-w-0">
+                              <div className="font-semibold text-purple-200 text-xs">Live Interactive App Built</div>
+                              <div className="text-[10px] text-purple-300/80 font-mono">Served on port 8000</div>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <button
+                              onClick={() => {
+                                setIsCanvasOpen(true);
+                                setCanvasActiveTab('preview');
+                                refreshWorkspaceApp();
+                              }}
+                              className="px-2.5 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-semibold text-xs flex items-center gap-1 transition-all cursor-pointer shadow-md shadow-purple-500/20"
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                              <span>View in Canvas</span>
+                            </button>
+                            <a
+                              href="http://localhost:8000/api/workspace/live/index.html"
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="p-1.5 rounded-xl bg-secondary hover:bg-secondary/80 text-foreground text-xs transition-colors cursor-pointer"
+                              title="Open Fullscreen in New Tab"
+                            >
+                              <ExternalLink className="w-3.5 h-3.5" />
+                            </a>
+                          </div>
+                        </div>
+                      )}
+
                       {/* Personal Knowledge Journal: Recalled Context Pill */}
                       {!isUser && msg.memoriesRecalled && msg.memoriesRecalled.length > 0 && (
                         <div className="mt-3 p-3 bg-gradient-to-r from-indigo-950/60 to-slate-900/80 border border-indigo-500/50 rounded-xl flex items-center justify-between gap-3 text-xs shadow-md shadow-indigo-500/10 animate-in fade-in duration-200">
@@ -3255,6 +3397,7 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
               previewHtml={activePreviewHtml}
               codeSnippet={activeCodeSnippet}
               codeFilename={activeCodeFilename}
+              onReloadApp={refreshWorkspaceApp}
               todoItems={todoItems}
               onToggleTodoItem={handleToggleTodoItem}
               toolsExecuted={activeToolsHistory}

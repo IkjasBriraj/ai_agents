@@ -699,11 +699,11 @@ Target Workspace: `{AGENT_WORKSPACE_DIR}` (Agent: `{selected_agent}`)
                             )
                             user_request = f"Please execute the following approved plan:\n\n{approved_plan}\n\nOriginal Request:\n{user_request}"
                         else:
-                            # Stream plan for UI visibility without blocking execution
+                            # Stream plan for UI visibility without blocking execution (informational only)
                             loop.call_soon_threadsafe(
                                 queue.put_nowait,
                                 {
-                                    "type": "plan_request",
+                                    "type": "plan_info",
                                     "plan_path": plan_path,
                                     "plan_content": plan_content,
                                     "session_id": session_id,
