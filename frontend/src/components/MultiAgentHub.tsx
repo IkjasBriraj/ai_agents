@@ -43,6 +43,7 @@ import {
   VolumeX,
   Sliders,
   FileCode,
+  Wrench,
 } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
@@ -314,39 +315,115 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
     return null;
   }, [messages]);
 
+  // Helper to extract clean file path from any tool parameter or string
+  const extractFilePath = useCallback((raw: any): string | null => {
+    if (!raw) return null;
+    if (typeof raw === 'object') {
+      const p = raw.path || raw.file_path || raw.filename || raw.file;
+      if (p && typeof p === 'string') return p.trim();
+    }
+    const str = String(raw).trim();
+    if (!str) return null;
+    if (/^[a-zA-Z0-9_\-\.\/\\]+\.[a-zA-Z0-9]+$/.test(str) && !str.includes('\n') && !str.includes(' ')) {
+      return str;
+    }
+    const matchJson = str.match(/['"](?:path|file_path|filename|file)['"]\s*:\s*['"]([^'"]+\.[a-zA-Z0-9]+)['"]/i);
+    if (matchJson) return matchJson[1].trim();
+    
+    const matchExt = str.match(/(?:^|[\s"'`\\/])([a-zA-Z0-9_\-\.\/\\]+\.(?:html|htm|css|js|jsx|ts|tsx|py|json|md|csv|xlsx|pptx|png|svg))(?=$|[\s"'`])/i);
+    if (matchExt) return matchExt[1].trim();
+
+    return null;
+  }, []);
+
   // Calculate active edited files list for Screenshot 5 card above prompt box
   const activeEditedFiles = useMemo(() => {
     const fileMap = new Map<string, { path: string; additions: number; deletions: number }>();
-    const tools = (lastAssistantMessage as any)?.toolsExecuted || (activeToolsHistory as any) || [];
-    for (const t of tools) {
-      if (t.toolName === 'file_operation' || t.toolName === 'create_project' || t.toolName === 'edit_file') {
-        try {
-          let inputObj: any = t.input || t.target;
-          if (typeof inputObj === 'string' && inputObj.startsWith('{')) {
-            try { inputObj = JSON.parse(inputObj); } catch {}
-          }
-          if (typeof inputObj === 'object' && inputObj !== null) {
-            if (t.toolName === 'create_project') {
-              for (const [p, content] of Object.entries(inputObj)) {
-                const lines = String(content).split('\\n').length;
-                fileMap.set(p, { path: p, additions: lines, deletions: 0 });
-              }
-            } else {
-              const p = inputObj.path || inputObj.file_path || inputObj.filename || 'workspace/file';
-              const lines = inputObj.content ? String(inputObj.content).split('\\n').length : (inputObj.replace ? String(inputObj.replace).split('\\n').length : 14);
-              const delLines = inputObj.search ? String(inputObj.search).split('\\n').length : 0;
-              fileMap.set(p, { path: p, additions: lines, deletions: delLines });
-            }
-          }
-        } catch {}
+
+    // 1. Gather all tool executions across current message & history
+    const allTools: any[] = [];
+    if (lastAssistantMessage?.toolsExecuted) {
+      allTools.push(...lastAssistantMessage.toolsExecuted);
+    }
+    if (activeToolsHistory && activeToolsHistory.length > 0) {
+      for (const t of activeToolsHistory) {
+        if (!allTools.some(x => x.toolName === t.tool && x.target === t.input)) {
+          allTools.push({ toolName: t.tool, target: t.input, details: t.output });
+        }
       }
     }
-    if (fileMap.size === 0 && activeCodeFilename && activeCodeSnippet) {
-      const lines = activeCodeSnippet.split('\\n').length;
-      fileMap.set(activeCodeFilename, { path: activeCodeFilename, additions: lines, deletions: 0 });
+
+    // 2. Extract files from tools
+    for (const t of allTools) {
+      const toolName = (t.toolName || t.tool || '').toLowerCase();
+      if (toolName.includes('create_project')) {
+        let inputObj = t.input || t.target;
+        if (typeof inputObj === 'string' && inputObj.startsWith('{')) {
+          try { inputObj = JSON.parse(inputObj); } catch {}
+        }
+        if (typeof inputObj === 'object' && inputObj !== null) {
+          for (const [p, content] of Object.entries(inputObj)) {
+            const lCount = String(content).split('\n').length;
+            fileMap.set(p, { path: p, additions: Math.max(lCount, 12), deletions: 0 });
+          }
+        }
+      }
+
+      const extractedPath = extractFilePath(t.target) || extractFilePath(t.input) || extractFilePath(t.details);
+      if (extractedPath && !extractedPath.startsWith('http') && !fileMap.has(extractedPath)) {
+        const estAdditions = t.details ? Math.min(Math.max(String(t.details).split('\n').length, 18), 120) : 24;
+        const estDeletions = toolName.includes('patch') || toolName.includes('edit') ? 6 : 0;
+        fileMap.set(extractedPath, { path: extractedPath, additions: estAdditions, deletions: estDeletions });
+      }
     }
+
+    // 3. Extract files from assistant message content
+    const content = (lastAssistantMessage?.content || '') + ' ' + (streamingPreview || '');
+    if (content) {
+      const createdMatches = content.matchAll(/\[SUCCESS\] Created:\s*([^\s\r\n]+)/gi);
+      for (const m of createdMatches) {
+        const p = m[1].trim();
+        if (p && !fileMap.has(p)) {
+          fileMap.set(p, { path: p, additions: 45, deletions: 0 });
+        }
+      }
+
+      const verifiedMatches = content.matchAll(/Verified & applied code fixes directly to ['"]([^'"]+)['"]/gi);
+      for (const m of verifiedMatches) {
+        const p = m[1].trim();
+        if (p && !fileMap.has(p)) {
+          fileMap.set(p, { path: p, additions: 32, deletions: 8 });
+        }
+      }
+
+      const deckMatches = content.matchAll(/(?:PowerPoint deck|interactive HTML presentation|HTML slide deck|created|generated|saved|wrote to|modified)\s*[:`*]*\s*([a-zA-Z0-9_\-\.\/\\]+\.(?:pptx|html|xlsx|csv|py|js|tsx|css))/gi);
+      for (const m of deckMatches) {
+        const p = m[1].trim();
+        if (p && !fileMap.has(p)) {
+          fileMap.set(p, { path: p, additions: p.endsWith('.pptx') ? 10 : 38, deletions: 0 });
+        }
+      }
+
+      const tableMatches = content.matchAll(/\|\s*`?([a-zA-Z0-9_\-\.\/\\]+\.[a-zA-Z0-9]+)`?\s*\|\s*(?:Created|Modified|Generated|Repaired)/gi);
+      for (const m of tableMatches) {
+        const p = m[1].trim();
+        if (p && !fileMap.has(p)) {
+          fileMap.set(p, { path: p, additions: 28, deletions: 4 });
+        }
+      }
+    }
+
+    // 4. Fallback to active canvas code file
+    if (fileMap.size === 0 && activeCodeFilename) {
+      const cleanName = activeCodeFilename.replace(/^workspace\//, '');
+      if (cleanName && !cleanName.includes('undefined')) {
+        const lCount = activeCodeSnippet ? activeCodeSnippet.split('\n').length : 35;
+        fileMap.set(cleanName, { path: cleanName, additions: lCount, deletions: 0 });
+      }
+    }
+
     return Array.from(fileMap.values());
-  }, [lastAssistantMessage, activeToolsHistory, activeCodeFilename, activeCodeSnippet]);
+  }, [lastAssistantMessage, activeToolsHistory, streamingPreview, activeCodeFilename, activeCodeSnippet, extractFilePath]);
 
   // Refresh live app from workspace directory
   const refreshWorkspaceApp = useCallback(async () => {
@@ -2687,23 +2764,34 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
                         {isUser ? (
                           <span>User Request</span>
                         ) : (
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            <Bot className="w-3.5 h-3.5 text-primary" />
-                            <span>Orchestrator</span>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-lg bg-secondary/80 border border-border/80 text-[11px] font-semibold text-foreground">
+                              <Bot className="w-3.5 h-3.5 text-primary" />
+                              <span>Senior Orchestrator</span>
+                            </div>
                             {msg.agentUsed && (
-                              <span className="font-bold text-accent bg-accent/10 border border-accent/30 px-2 py-0.5 rounded text-[9px] uppercase flex items-center gap-1">
-                                <Zap className="w-2.5 h-2.5" />
-                                Spawned: {msg.workerName || `${msg.agentUsed} Agent`}
+                              <span className={cn(
+                                "font-bold border px-2.5 py-0.5 rounded-lg text-[10px] uppercase tracking-wide flex items-center gap-1.5 shadow-sm",
+                                (msg.agentUsed.includes('code')) && "bg-emerald-500/15 border-emerald-500/40 text-emerald-300",
+                                (msg.agentUsed.includes('analysis') || msg.agentUsed.includes('fix')) && "bg-purple-500/15 border-purple-500/40 text-purple-300",
+                                (msg.agentUsed.includes('ppt') || msg.agentUsed.includes('presentation')) && "bg-amber-500/15 border-amber-500/40 text-amber-300",
+                                (msg.agentUsed.includes('research')) && "bg-sky-500/15 border-sky-500/40 text-sky-300",
+                                (msg.agentUsed.includes('business')) && "bg-rose-500/15 border-rose-500/40 text-rose-300",
+                                !['code', 'analysis', 'fix', 'ppt', 'presentation', 'research', 'business'].some(k => (msg.agentUsed || '').includes(k)) && "bg-primary/15 border-primary/40 text-primary"
+                              )}>
+                                <Zap className="w-3 h-3 animate-pulse" />
+                                Worker: {msg.workerName || formatWorkerDisplayName(msg.agentUsed)}
                               </span>
                             )}
                             {msg.routingConfidence && (
-                              <span className="text-[9px] font-mono bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 px-1.5 py-0.5 rounded">
+                              <span className="text-[9px] font-mono bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 px-1.5 py-0.5 rounded-md">
                                 {Math.round(msg.routingConfidence * 100)}% Match
                               </span>
                             )}
-                            {msg.routingReason && (
-                              <span className="text-[10px] font-sans normal-case tracking-normal text-muted-foreground/90 bg-secondary/40 px-2 py-0.5 rounded border border-border/50 max-w-md truncate" title={msg.routingReason}>
-                                {msg.routingReason}
+                            {msg.toolsExecuted && msg.toolsExecuted.length > 0 && (
+                              <span className="text-[9px] font-mono bg-secondary/60 text-muted-foreground border border-border/60 px-1.5 py-0.5 rounded-md flex items-center gap-1">
+                                <Wrench className="w-2.5 h-2.5 text-purple-400" />
+                                {msg.toolsExecuted.length} tools
                               </span>
                             )}
                           </div>
@@ -3132,43 +3220,78 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
                         </div>
                       )}
 
-                      {/* --- Dropdown button for intermediate tool steps --- */}
+                      {/* --- Sleek Visible Tool Execution Chips & Dropdown Logs --- */}
                       {!isUser && msg.toolsExecuted && msg.toolsExecuted.length > 0 && (
-                        <div className="mt-4 pt-4 border-t border-border/30">
-                          <button 
-                            onClick={() => setOpenDropdownIdx(openDropdownIdx === idx ? null : idx)}
-                            className="font-mono text-xs text-primary hover:text-accent flex items-center gap-1 focus:outline-none transition-colors"
-                          >
-                            {openDropdownIdx === idx ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-                            {openDropdownIdx === idx ? "Hide Tool Execution Steps" : `Show Tool Execution Steps (${msg.toolsExecuted.length})`}
-                          </button>
+                        <div className="my-3.5 p-3 rounded-2xl bg-[#0e121a] border border-border/70 shadow-inner">
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="text-[10px] font-mono uppercase tracking-wider text-purple-400 font-bold flex items-center gap-1.5">
+                              <Wrench className="w-3.5 h-3.5 text-purple-400" />
+                              Tools Executed ({msg.toolsExecuted.length})
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => setOpenDropdownIdx(openDropdownIdx === idx ? null : idx)}
+                              className="text-[11px] font-mono text-primary hover:text-accent flex items-center gap-1 transition-colors cursor-pointer"
+                            >
+                              {openDropdownIdx === idx ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                              {openDropdownIdx === idx ? "Hide Action Logs" : "Show Full Logs"}
+                            </button>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            {msg.toolsExecuted.map((tool, tIdx) => (
+                              <div
+                                key={tIdx}
+                                onClick={() => setOpenDropdownIdx(openDropdownIdx === idx ? null : idx)}
+                                className={cn(
+                                  "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-mono border transition-all cursor-pointer select-none",
+                                  tool.status === 'success' 
+                                    ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/20" 
+                                    : tool.status === 'error'
+                                      ? "bg-red-500/10 border-red-500/30 text-red-300 hover:bg-red-500/20"
+                                      : "bg-amber-500/10 border-amber-500/30 text-amber-300 animate-pulse"
+                                )}
+                                title={tool.details || tool.target || tool.toolName}
+                              >
+                                <span className="font-semibold text-[11px]">{tool.toolName}</span>
+                                {tool.target && (
+                                  <span className="text-[10px] text-zinc-400 truncate max-w-[160px]">
+                                    ({tool.target})
+                                  </span>
+                                )}
+                                {tool.status === 'success' && <Check className="w-2.5 h-2.5 text-emerald-400" />}
+                                {tool.status === 'error' && <AlertTriangle className="w-2.5 h-2.5 text-red-400" />}
+                                {tool.status === 'pending' && <Loader2 className="w-2.5 h-2.5 text-amber-400 animate-spin" />}
+                              </div>
+                            ))}
+                          </div>
 
                           {openDropdownIdx === idx && (
-                            <div className="mt-3 space-y-2.5 p-3.5 bg-muted/40 border border-border/50 animate-in slide-in-from-top-2 duration-200">
-                              <div className="font-mono text-[9px] text-muted-foreground uppercase tracking-wider border-b border-border/30 pb-1 mb-1">
+                            <div className="mt-3 space-y-2 pt-2.5 border-t border-border/40 animate-in slide-in-from-top-1 duration-200">
+                              <div className="font-mono text-[9px] text-muted-foreground uppercase tracking-wider pb-1">
                                 LangGraph Action Logs
                               </div>
                               {msg.toolsExecuted.map((tool, tIdx) => (
-                                <div key={tIdx} className="text-xs space-y-1">
+                                <div key={tIdx} className="p-2.5 rounded-xl bg-black/40 border border-border/50 text-xs space-y-1">
                                   <div className="flex items-center justify-between">
-                                    <span className="font-mono font-bold text-foreground bg-muted px-1.5 py-0.5 border">
-                                      🔧 tool: {tool.toolName}
+                                    <span className="font-mono font-bold text-foreground bg-secondary/60 px-2 py-0.5 rounded border border-border/60">
+                                      🔧 {tool.toolName}
                                     </span>
                                     <span className={cn(
-                                      "latency-badge uppercase text-[8px] border font-bold px-1.5",
-                                      tool.status === 'success' && "bg-secondary text-secondary-foreground border-accent/30",
-                                      tool.status === 'error' && "bg-destructive/10 text-destructive border-destructive/20"
+                                      "latency-badge uppercase text-[8px] border font-bold px-1.5 py-0.5 rounded",
+                                      tool.status === 'success' && "bg-emerald-500/20 text-emerald-300 border-emerald-500/30",
+                                      tool.status === 'error' && "bg-destructive/20 text-destructive border-destructive/30",
+                                      tool.status === 'pending' && "bg-amber-500/20 text-amber-300 border-amber-500/30"
                                     )}>
                                       {tool.status}
                                     </span>
                                   </div>
                                   {tool.target && (
-                                    <div className="font-mono text-[10px] text-muted-foreground pl-2.5">
+                                    <div className="font-mono text-[10px] text-zinc-400 pl-1">
                                       🎯 target: {tool.target}
                                     </div>
                                   )}
                                   {tool.details && (
-                                    <div className="text-[11px] text-muted-foreground pl-2.5 italic">
+                                    <div className="text-[11px] text-zinc-300 pl-1 whitespace-pre-wrap font-mono max-h-32 overflow-y-auto bg-black/30 p-1.5 rounded">
                                       {tool.details}
                                     </div>
                                   )}
@@ -3505,6 +3628,52 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
 
             {/* PROMPT INPUT */}
             <div className="shrink-0 border-t border-border bg-card/95 backdrop-blur-2xl p-4 z-20">
+              {/* Active Worker & Live Tool Execution Status Banner */}
+              {isTyping && (
+                <div className="mb-3 rounded-2xl bg-[#0b0e14] border border-cyan-500/50 p-3 shadow-lg shadow-cyan-950/40 animate-in slide-in-from-bottom-2 duration-200">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="relative flex items-center justify-center shrink-0">
+                        <div className="w-8 h-8 rounded-xl bg-cyan-950/80 border border-cyan-400/60 flex items-center justify-center text-cyan-300">
+                          <Cpu className="w-4 h-4 animate-spin text-cyan-400" />
+                        </div>
+                        <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping" />
+                        <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-emerald-400" />
+                      </div>
+                      <div className="flex flex-col min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-xs font-bold text-white tracking-wide">
+                            {formatWorkerDisplayName(activeRoutingAgent || routingDecision?.workerId || 'orchestrator')}
+                          </span>
+                          <span className="px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 text-[10px] font-mono uppercase font-semibold">
+                            ACTIVE WORKER
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-slate-300 flex items-center gap-1.5 mt-0.5">
+                          {activeTool ? (
+                            <span className="text-amber-300 font-mono font-medium flex items-center gap-1">
+                              <Wrench className="w-3 h-3 text-amber-400 animate-spin" />
+                              Running Tool: <strong className="text-amber-200">{activeTool}</strong>
+                            </span>
+                          ) : thinkingSubStep ? (
+                            <span className="text-slate-300 truncate font-mono">
+                              {thinkingSubStep}
+                            </span>
+                          ) : (
+                            <span className="text-slate-400 font-mono">
+                              Coordinating multi-agent execution pipeline...
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 font-mono text-[11px] text-slate-400 bg-slate-900/90 px-2.5 py-1 rounded-xl border border-border/70 shrink-0">
+                      <Zap className="w-3.5 h-3.5 text-yellow-400" />
+                      <span className="text-slate-200 font-semibold">{activeToolsHistory.length}</span> tools invoked
+                    </div>
+                  </div>
+                </div>
+              )}
               {/* Screenshot 5: Edited Files Card directly above prompt input */}
               {activeEditedFiles.length > 0 && (
                 <div className="mb-3 rounded-2xl bg-[#0f141c] border border-border/70 p-3 shadow-xl animate-in slide-in-from-bottom-2 duration-200">

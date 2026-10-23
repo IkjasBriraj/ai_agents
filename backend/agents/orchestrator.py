@@ -754,7 +754,7 @@ Conversation History:
                 HumanMessage(content=state["user_request"])
             ])
             state["agent_response"] = response.content
-        elif selected_agent == "analyze_and_fix":
+        elif selected_agent in ["analyze_and_fix", "analysis"]:
             state["agent_response"] = self._analyze_and_fix(user_request, context, session_id=session_id, callbacks=callbacks)
         else:
             agent_model = self.model_name or (DEFAULT_CODE_MODEL if selected_agent == "code" else self.model_name)
@@ -1049,7 +1049,8 @@ Read the relevant files, identify issues, and apply fixes using file_operation(p
         screenshots_taken = []
         browser_launched = False
 
-        if app_url:
+        if app_url and not app_url.startswith("file:"):
+            # Non-blocking browser inspection: only check if HTTP server is active
             emit_thinking(f"\n🌐 Checking live application runtime at {app_url}...")
             try:
                 from .browser_service import get_browser_service, close_browser_service

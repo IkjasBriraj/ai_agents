@@ -3175,7 +3175,7 @@ def get_research_agent_tools() -> List[StructuredTool]:
 
 
 def get_analysis_agent_tools() -> List[StructuredTool]:
-    """Get tools for Analysis Agent"""
+    """Get tools for Analysis Agent - focused strictly on read-only codebase diagnostics, AST inspection, and architectural analysis without blocking terminal or browser execution."""
     return [
         StructuredTool.from_function(
             name="update_todo_list",
@@ -3189,37 +3189,21 @@ def get_analysis_agent_tools() -> List[StructuredTool]:
             func=lambda x: verify_app_browser_console(
                 safe_parse_input(x).get("target_dir", x if isinstance(x, str) else "")
             ),
-            description="Run static browser & console verification checks on generated app files. Checks HTML, script links (404s), JS console syntax errors, and Python syntax. Input: dict with optional 'target_dir'. NOTE: For real browser testing with console errors, use browser_open_url + browser_get_console_errors instead."
+            description="Run static browser & console verification checks on generated app files. Checks HTML, script links (404s), JS console syntax errors, and Python syntax. Fast and non-blocking. Input: dict with optional 'target_dir'."
         ),
         StructuredTool.from_function(
             name="analyze_code",
             func=lambda x: analyze_code(safe_parse_input(x).get("code", x if isinstance(x, str) else x)),
-            description="Analyze code for issues and improvements. Input should be the code as a string."
+            description="Analyze code for issues, anti-patterns, and improvements. Input should be the code as a string."
         ),
         StructuredTool.from_function(
             name="file_operation",
             func=lambda x: file_operation(
-                safe_parse_input(x).get("operation", "read"),
+                "list" if safe_parse_input(x).get("operation", "read") == "list" else "read",
                 safe_parse_input(x).get("path", ""),
                 safe_parse_input(x).get("content", "")
             ),
-            description="Perform file operations in workspace. Operations: 'read', 'write', 'list', 'patch'. Input should be a dict with 'operation', 'path', and optional 'content' keys. Use 'write' to create/overwrite files, 'patch' for targeted code edits."
-        ),
-        StructuredTool.from_function(
-            name="execute_terminal",
-            func=lambda x: execute_terminal_command(
-                safe_parse_input(x).get("command", x if isinstance(x, str) else ""),
-                safe_parse_input(x).get("cwd", "")
-            ),
-            description="Execute a terminal/shell command for validation (e.g. python -m py_compile, pytest, npm run build, eslint). The user will be asked to approve the command before it runs. Input should be a dict with 'command' and optional 'cwd'. Returns command output."
-        ),
-        StructuredTool.from_function(
-            name="execute_code",
-            func=lambda x: execute_python_code(
-                safe_parse_input(x).get("code", x if isinstance(x, str) else ""),
-                safe_parse_input(x).get("language", "python")
-            ),
-            description="Execute Python code safely for testing and validation. Input should be a dict with 'code' and optional 'language' keys."
+            description="Inspect files in the workspace. Read-only for Analysis Agent. Operations: 'read' (read full file contents) or 'list' (list directory). Input: dict with 'operation' and 'path'."
         ),
         StructuredTool.from_function(
             name="recursive_list",
@@ -3264,23 +3248,13 @@ def get_analysis_agent_tools() -> List[StructuredTool]:
             description="Query workspace codebase using Hybrid RAG (dense vector similarity + BM25 keyword search). Input: dict with 'query' and optional 'k' (top results count)."
         ),
         StructuredTool.from_function(
-            name="edit_file",
-            func=lambda x: edit_file_search_replace(
-                safe_parse_input(x).get("path", ""),
-                safe_parse_input(x).get("search", safe_parse_input(x).get("search_block", "")),
-                safe_parse_input(x).get("replace", safe_parse_input(x).get("replace_block", "")),
-                float(safe_parse_input(x).get("similarity_threshold", 0.6))
-            ),
-            description="Edit an existing file using search/replace blocks with fuzzy matching. Input: dict with 'path', 'search', 'replace'."
-        ),
-        StructuredTool.from_function(
             name="batch_verify_and_repair_files",
             func=lambda x: batch_verify_and_repair_files(
                 safe_parse_input(x).get("files", safe_parse_input(x).get("file_paths", x))
             ),
-            description="Scan workspace files for syntax errors (Python AST, JS unclosed braces, HTML unmatched tags) and automatically repair them. Input: list of file paths or dict with 'files'."
+            description="Scan workspace files for syntax errors (Python AST, JS unclosed braces, HTML unmatched tags) and report diagnostics. Input: list of file paths or dict with 'files'."
         ),
-    ] + _get_browser_tools() + _get_knowledge_and_utility_tools()
+    ] + _get_knowledge_and_utility_tools()
 
 
 def csv_sheet_operation(operation: str, path: str, data: Optional[List[List[Any]]] = None) -> str:

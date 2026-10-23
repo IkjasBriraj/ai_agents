@@ -844,9 +844,9 @@ def create_multi_agent_router(
         """Fetch the contents of a specific whitelisted file"""
         try:
             import os
-            from .config import is_safe_path
+            from .config import is_safe_path, AGENT_WORKSPACE_DIR
             
-            target_abs = os.path.abspath(path)
+            target_abs = os.path.abspath(os.path.join(AGENT_WORKSPACE_DIR, path)) if not os.path.isabs(path) else os.path.abspath(path)
             
             # Security check
             if not is_safe_path(target_abs):
@@ -881,9 +881,9 @@ def create_multi_agent_router(
         """Write or update the contents of a specific whitelisted file"""
         try:
             import os
-            from .config import is_safe_path
+            from .config import is_safe_path, AGENT_WORKSPACE_DIR
             
-            target_abs = os.path.abspath(request.path)
+            target_abs = os.path.abspath(os.path.join(AGENT_WORKSPACE_DIR, request.path)) if not os.path.isabs(request.path) else os.path.abspath(request.path)
             
             # Security check
             if not is_safe_path(target_abs):
