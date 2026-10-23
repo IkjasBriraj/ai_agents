@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 def search_and_download_image(query: str, filename: str) -> Optional[str]:
     """
     Search for a high-quality real image related to the topic and download it locally.
-    Falls back to local diffusion AI image generation if web search is unavailable.
+    Queries Wikimedia Commons with iiurlwidth=800, Wikipedia API, and falls back to local diffusion AI image generation.
     """
     import os, json, urllib.request, urllib.parse
     from .config import AGENT_WORKSPACE_DIR
@@ -26,30 +26,61 @@ def search_and_download_image(query: str, filename: str) -> Optional[str]:
 
     img_dir = os.path.join(AGENT_WORKSPACE_DIR, "_generated_images")
     os.makedirs(img_dir, exist_ok=True)
-    out_path = os.path.join(img_dir, f"{filename}.jpg")
 
     clean_query = query.strip()
     if clean_query:
+        # 1. Search Wikimedia Commons with optimized 800px thumbnail width
         try:
-            url = f"https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch={urllib.parse.quote(clean_query)}&gsrnamespace=6&prop=imageinfo&iiprop=url|size&format=json"
+            url = f"https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch={urllib.parse.quote(clean_query)}&gsrnamespace=6&prop=imageinfo&iiprop=url|size&iiurlwidth=800&format=json"
             req = urllib.request.Request(url, headers={'User-Agent': 'SeniorAgent/1.0 (contact@senioragent.org)'})
             with urllib.request.urlopen(req, timeout=5) as res:
                 data = json.loads(res.read().decode('utf-8'))
             pages = data.get('query', {}).get('pages', {})
             for p in pages.values():
-                if 'imageinfo' in p and p['imageinfo']:
-                    img_url = p['imageinfo'][0].get('url')
-                    if img_url and any(img_url.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png']):
+                info_list = p.get('imageinfo', [])
+                if not info_list:
+                    continue
+                info = info_list[0]
+                target_urls = [info.get('thumburl'), info.get('url')]
+                for img_url in target_urls:
+                    if not img_url:
+                        continue
+                    parsed_path = urllib.parse.urlparse(img_url).path.lower()
+                    if any(parsed_path.endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.webp']):
+                        ext = '.png' if parsed_path.endswith('.png') else '.jpg'
+                        out_path = os.path.join(img_dir, f"{filename}{ext}")
                         d_req = urllib.request.Request(img_url, headers={'User-Agent': 'SeniorAgent/1.0 (contact@senioragent.org)'})
-                        with urllib.request.urlopen(d_req, timeout=7) as d_res:
+                        with urllib.request.urlopen(d_req, timeout=8) as d_res:
                             img_bytes = d_res.read()
                         if len(img_bytes) > 2048:
                             with open(out_path, 'wb') as f:
                                 f.write(img_bytes)
-                            logger.info(f"Downloaded topic image from Wikimedia Commons for '{clean_query}': {out_path}")
+                            logger.info(f"Downloaded topic image from Wikimedia for '{clean_query}': {out_path} ({len(img_bytes)} bytes)")
                             return out_path
         except Exception as e:
-            logger.debug(f"Web image search failed for '{clean_query}': {e}. Falling back to AI image generator...")
+            logger.debug(f"Wikimedia search failed for '{clean_query}': {e}")
+
+        # 2. Try Wikipedia Page Summary Thumbnail API
+        try:
+            first_term = clean_query.split()[0] if clean_query else clean_query
+            wiki_url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{urllib.parse.quote(first_term)}"
+            w_req = urllib.request.Request(wiki_url, headers={'User-Agent': 'SeniorAgent/1.0 (contact@senioragent.org)'})
+            with urllib.request.urlopen(w_req, timeout=4) as w_res:
+                w_data = json.loads(w_res.read().decode('utf-8'))
+            thumb_source = w_data.get('thumbnail', {}).get('source') or w_data.get('originalimage', {}).get('source')
+            if thumb_source:
+                ext = '.png' if '.png' in thumb_source.lower() else '.jpg'
+                out_path = os.path.join(img_dir, f"{filename}{ext}")
+                d_req = urllib.request.Request(thumb_source, headers={'User-Agent': 'SeniorAgent/1.0 (contact@senioragent.org)'})
+                with urllib.request.urlopen(d_req, timeout=6) as d_res:
+                    img_bytes = d_res.read()
+                if len(img_bytes) > 2048:
+                    with open(out_path, 'wb') as f:
+                        f.write(img_bytes)
+                    logger.info(f"Downloaded topic image from Wikipedia for '{clean_query}': {out_path}")
+                    return out_path
+        except Exception as e:
+            logger.debug(f"Wikipedia summary search failed for '{clean_query}': {e}")
 
     # Fallback to local diffusion AI image generator
     try:
@@ -61,7 +92,6 @@ def search_and_download_image(query: str, filename: str) -> Optional[str]:
         pass
 
     return None
-
 
 def generate_presentation(
     title: str = "Presentation",
@@ -123,6 +153,38 @@ def generate_presentation(
                     {"type": "metrics", "title": "Key Performance Indicators", "metrics": [{"label": "Target Growth", "value": "150%"}, {"label": "Efficiency Gain", "value": "45%"}, {"label": "Payback Period", "value": "6 Months"}]},
                     {"type": "split_image", "title": "Strategic Execution & Growth", "subtitle": "From Blueprint to Production Execution", "bullets": ["Phase 1: Foundation & Core Infrastructure", "Phase 2: Market Deployment & User Scaling", "Phase 3: Operational Optimization & Growth"], "image_prompt": "A high-tech robotic arm 3D printing a precision mechanical gear on a blueprint grid with technical callout annotations, 8k"}
                 ]
+
+        # Ensure an interactive Quiz slide with verified answers is included in every deck
+        has_quiz = any(str(s.get("type", "")).lower() == "quiz" for s in slides)
+        if not has_quiz:
+            slides.append({
+                "type": "quiz",
+                "title": f"{title}: Knowledge Check & Topic Mastery",
+                "questions": [
+                    {
+                        "question": f"What is the foundational significance of {title}?",
+                        "options": [
+                            "A) Outdated historical concept",
+                            f"B) Paradigm-shifting breakthrough in modern applications",
+                            "C) Theoretical construct with no real utility",
+                            "D) Redundant duplicate process"
+                        ],
+                        "answer": "B) Paradigm-shifting breakthrough in modern applications",
+                        "explanation": f"Understanding {title} provides essential architectural and practical advantage in real-world implementations."
+                    },
+                    {
+                        "question": "Which principle guarantees optimal results in this domain?",
+                        "options": [
+                            "A) Unchecked assumptions",
+                            "B) Rigorous verification, active feedback, and precision design",
+                            "C) Skipping modular validation",
+                            "D) Static manual inspection"
+                        ],
+                        "answer": "B) Rigorous verification, active feedback, and precision design",
+                        "explanation": "Continuous automated validation and feedback loops ensure zero errors and highest fidelity results."
+                    }
+                ]
+            })
 
         # Process automated image search and insertion for slides
         for idx, s in enumerate(slides):

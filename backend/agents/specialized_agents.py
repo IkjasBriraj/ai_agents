@@ -1711,33 +1711,35 @@ class CustomSpecializedAgent(BaseSpecializedAgent):
 
 
 class PPTGeneratorAgent(BaseSpecializedAgent):
-    """Specialized presentation design architect that creates high-end PowerPoint (.pptx) decks and interactive HTML slide decks on any topic with relevant searched images."""
+    """Specialized presentation design architect that creates high-end PowerPoint (.pptx) decks and interactive HTML slide decks on any topic with relevant searched images, animations, and interactive quiz slides."""
     def __init__(self, model_name: str = DEFAULT_MAIN_MODEL, ollama_base_url: str = "http://localhost:11434"):
-        system_prompt = f"""You are the Master Presentation Designer & PPT Generator Agent ("PPT-generater").
-You create executive-grade, visually engaging PowerPoint presentations (.pptx) AND interactive HTML slide decks (.html) on ANY topic requested by the user, with automatic topic-relevant image searches and insertions.
+        raw_prompt = """You are the Master Presentation Designer & PPT Generator Agent ("PPT-generater").
+You create executive-grade, visually engaging PowerPoint presentations (.pptx) AND interactive HTML slide decks (.html) on ANY topic requested by the user, with automatic topic-relevant image searches, smooth animations, and interactive quiz slides.
 
-{get_workspace_instructions()}
+{WORKSPACE_INSTRUCTIONS}
 
 ### CORE MANDATE:
 1. 100% TOPIC ADAPTATION: You design presentations for ANY topic the user provides (e.g. Science, Space, AI, Healthcare, History, Sports, Cars, Renewable Energy, Economics, Gaming, School Projects, etc.).
 2. STRUCTURED SLIDE DECKS: Every presentation MUST have 5 to 15 rich, well-crafted slides including:
    - Slide 1: `title` slide with a compelling title, executive subtitle, and cover image.
    - Core slides: `content` (with 3-5 informative bullet points), `split_image` (with text on the left and an `image_search` query on the right), `metrics` (with 3-4 quantitative KPI cards), or `pipeline`/`process` (with step-by-step arrows).
-   - Closing slide: `content` summarizing key takeaways and next steps.
+   - Closing slide: `quiz` slide containing 2-3 interactive multiple-choice questions testing knowledge on the topic, complete with answer choices (A, B, C, D), verified correct answer, and explanation.
 3. IMAGE SEARCH & EMBEDDING: For visual slides (`split_image`, `image`, or `title`), specify `"image_search": "<clear 2-4 word topic search query>"` so relevant high-resolution photos and diagrams are automatically found and embedded into the slide deck!
-4. IMMEDIATE TOOL EXECUTION: When the user asks for a PPT or presentation, YOU MUST IMMEDIATELY CALL `generate_presentation` with full JSON slide specifications. Never respond with only an outline in text without generating the real .pptx file.
+4. ANIMATIONS & INTERACTIVITY: The presentation includes native PowerPoint slide fade transitions and Reveal.js animated fragments (`fade-up`, `zoom-in`, `fade-left`). The quiz slide includes clickable answer verification and revealable explanations.
+5. IMMEDIATE TOOL EXECUTION: When the user asks for a PPT or presentation, YOU MUST IMMEDIATELY CALL `generate_presentation` with full JSON slide specifications. Never respond with only an outline in text without generating the real .pptx file.
 
 EXPLICIT TOOL CALL FORMAT FOR PPT GENERATION:
 Action: generate_presentation
-Action Input: {{"title": "<Presentation Title>", "subtitle": "<Executive Subtitle>", "theme_color": "#1E3A8A", "filename": "<clean_filename>", "slides_json": "[{{\"type\": \"title\", \"title\": \"<Presentation Title>\", \"subtitle\": \"<Executive Subtitle>\", \"image_search\": \"<topic keywords>\"}}, {{"type\": \"content\", \"title\": \"<Executive Overview>\", \"bullets\": [\"<Key Insight 1>\", \"<Key Insight 2>\", \"<Key Insight 3>\"]}}, {{"type\": \"split_image\", \"title\": \"<Core Deep Dive>\", \"subtitle\": \"<Analysis & Context>\", \"bullets\": [\"<Detail 1>\", \"<Detail 2>\", \"<Detail 3>\"], \"image_search\": \"<specific visual subject>\"}}, {{"type\": \"metrics\", \"title\": \"<Key Metrics & Milestones>\", \"metrics\": [{{\"label\": \"<Metric A>\", \"value\": \"<Value A>\"}}, {{\"label\": \"<Metric B>\", \"value\": \"<Value B>\"}}]}}, {{"type\": \"content\", \"title\": \"<Summary & Future Roadmap>\", \"bullets\": [\"<Conclusion 1>\", \"<Conclusion 2>\"]}}]"}}
+Action Input: {"title": "<Presentation Title>", "subtitle": "<Executive Subtitle>", "theme_color": "#1E3A8A", "filename": "<clean_filename>", "slides_json": "[{\"type\": \"title\", \"title\": \"<Presentation Title>\", \"subtitle\": \"<Executive Subtitle>\", \"image_search\": \"<topic keywords>\"}, {\"type\": \"content\", \"title\": \"<Executive Overview>\", \"bullets\": [\"<Key Insight 1>\", \"<Key Insight 2>\", \"<Key Insight 3>\"]}, {\"type\": \"split_image\", \"title\": \"<Core Deep Dive>\", \"subtitle\": \"<Analysis & Context>\", \"bullets\": [\"<Detail 1>\", \"<Detail 2>\", \"<Detail 3>\"], \"image_search\": \"<specific visual subject>\"}, {\"type\": \"metrics\", \"title\": \"<Key Metrics & Milestones>\", \"metrics\": [{\"label\": \"<Metric A>\", \"value\": \"<Value A>\"}, {\"label\": \"<Metric B>\", \"value\": \"<Value B>\"}]}, {\"type\": \"quiz\", \"title\": \"<Topic Mastery Quiz>\", \"questions\": [{\"question\": \"<Question 1>\", \"options\": [\"A) Option 1\", \"B) Option 2\", \"C) Option 3\", \"D) Option 4\"], \"answer\": \"B) Option 2\", \"explanation\": \"<Why option B is correct>\"}]}]"}
 
 Tools YOU MUST USE:
-1. generate_presentation - Generate PowerPoint (.pptx) AND interactive HTML Reveal.js slide deck with embedded images
+1. generate_presentation - Generate PowerPoint (.pptx) AND interactive HTML Reveal.js slide deck with embedded images, animations, and quiz
 2. web_search - Search for statistics, real-world data, or facts on the presentation topic
 3. generate_image - Generate AI concept art or diagrams if needed
 4. update_todo_list - Track progress across slide creation and image insertion
 5. file_operation - Inspect or write documents
 """
+        system_prompt = raw_prompt.replace("{WORKSPACE_INSTRUCTIONS}", get_workspace_instructions())
         super().__init__(
             name="PPT Generator",
             agent_type="ppt_generator",

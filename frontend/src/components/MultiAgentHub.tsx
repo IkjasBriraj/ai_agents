@@ -753,6 +753,15 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
   const typingTimersRef = useRef<number[]>([]);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const [isUserScrolledUp, setIsUserScrolledUp] = useState<boolean>(false);
+
+  const handleMessagesScroll = useCallback(() => {
+    const el = messagesContainerRef.current;
+    if (!el) return;
+    const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    setIsUserScrolledUp(distanceToBottom > 80);
+  }, []);
   const abortControllerRef = useRef<AbortController | null>(null);
 
   // Thoughts templates
@@ -955,9 +964,12 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
     registerStopHandler,
   ]);
 
-  const scrollToBottom = () => {
+  const scrollToBottom = useCallback((force = false) => {
+    if (!force && isUserScrolledUp) {
+      return;
+    }
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
+  }, [isUserScrolledUp]);
 
   useEffect(() => {
     scrollToBottom();
@@ -2627,7 +2639,7 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
             </CardHeader>
             
             {/* CHAT LOGS */}
-            <div className="flex-1 overflow-y-auto p-6 space-y-6 font-sans text-base min-h-[350px]">
+            <div ref={messagesContainerRef} onScroll={handleMessagesScroll} className="flex-1 overflow-y-auto p-6 space-y-6 font-sans text-base min-h-[350px] relative">
               {/* Real-Time Saved Memory Alert Toast */}
               {savedMemoryToast && (
                 <div className="p-3 bg-gradient-to-r from-purple-950/80 to-slate-900 border border-purple-500/70 rounded-xl flex items-center justify-between gap-3 shadow-lg shadow-purple-500/25 animate-in slide-in-from-top-2 duration-300">
@@ -2747,22 +2759,29 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
                           : "bg-card border-border/80 text-foreground"
                       )}
                     >
-                      {/* Screenshot 4: Thought for Xs collapsible dropdown at TOP of message */}
+                      {/* Screenshot 4: Thought for Xs sleek collapsible dropdown */}
                       {!isUser && (msg.thinkingProcess || (isTyping && idx === messages.length - 1 && thinkingStream)) && (
-                        <div className="mb-3.5 pb-2.5 border-b border-border/20">
+                        <div className="mb-4">
                           <button
                             type="button"
                             onClick={() => toggleThinking(idx)}
-                            className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground font-mono transition-colors group cursor-pointer"
+                            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[#161822] hover:bg-[#1e2230] border border-border/70 text-xs font-mono text-zinc-300 hover:text-white transition-all cursor-pointer shadow-sm group"
                           >
-                            <span>
-                              {msg.thinkingProcess ? 'Thought for 10s' : 'Thinking...'}
+                            <span className="flex items-center gap-1.5">
+                              <Sparkles className="w-3.5 h-3.5 text-purple-400 group-hover:rotate-12 transition-transform" />
+                              <span>{msg.thinkingProcess ? 'Thought for 10s' : 'Thinking...'}</span>
                             </span>
-                            <ChevronDown className={cn("w-3.5 h-3.5 transition-transform duration-200 text-muted-foreground", openThinkingIdxs.includes(idx) && "rotate-180")} />
+                            <ChevronDown className={cn("w-3.5 h-3.5 text-zinc-400 transition-transform duration-200", openThinkingIdxs.includes(idx) && "rotate-180")} />
                           </button>
                           {openThinkingIdxs.includes(idx) && (
-                            <div className="mt-2.5 pl-3 border-l-2 border-muted-foreground/30 font-sans text-xs text-muted-foreground/90 whitespace-pre-wrap leading-relaxed max-h-[220px] overflow-y-auto animate-in slide-in-from-top-1 duration-200">
-                              {msg.thinkingProcess || thinkingStream}
+                            <div className="mt-2.5 rounded-2xl border border-border/70 bg-[#0c0f16] p-4 shadow-2xl max-h-[280px] overflow-y-auto animate-in fade-in slide-in-from-top-1 duration-200">
+                              <div className="text-[10px] font-mono uppercase tracking-wider text-purple-400/80 mb-2 font-bold flex items-center justify-between border-b border-border/30 pb-1.5">
+                                <span>Agent Reasoning Trace</span>
+                                <span className="text-[9px] text-muted-foreground font-normal">Deep Think</span>
+                              </div>
+                              <div className="font-sans text-xs text-zinc-300/90 whitespace-pre-wrap leading-relaxed selection:bg-purple-500/30">
+                                {msg.thinkingProcess || thinkingStream}
+                              </div>
                             </div>
                           )}
                         </div>
@@ -2823,45 +2842,113 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
                         </>
                       )}
 
-                      {/* App Screenshots Gallery */}
-                      {!isUser && msg.screenshots && msg.screenshots.length > 0 && (
-                        <div className="mt-4 pt-4 border-t border-border/40 space-y-3">
-                          <div className="flex items-center gap-2 text-xs font-mono font-bold text-primary uppercase tracking-wider">
-                            <Camera className="w-4 h-4 text-emerald-400" />
-                            <span>App Preview & Verification Screenshots ({msg.screenshots.length})</span>
-                          </div>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                            {msg.screenshots.map((ss, sIdx) => (
-                              <div 
-                                key={sIdx} 
-                                className="group relative bg-black/90 border border-border/60 overflow-hidden cursor-pointer hover:border-emerald-500/50 transition-all duration-200"
-                                onClick={() => setSelectedImageModal({ url: ss.image_base64 || ss.url, caption: ss.caption || ss.name })}
-                              >
-                                <div className="aspect-video relative overflow-hidden bg-muted/20">
-                                  <img 
-                                    src={ss.image_base64 || ss.url} 
-                                    alt={ss.caption || ss.name} 
-                                    className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
-                                  />
-                                  <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                                    <span className="flex items-center gap-1.5 bg-emerald-500 text-black px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-wider shadow-md">
-                                      <Eye className="w-3.5 h-3.5" /> View Fullscreen
-                                    </span>
+                      {/* App Screenshots Gallery & Visual Verification Card */}
+                      {!isUser && (() => {
+                        const contentScreenshots: Array<{ name: string; url: string; caption: string; image_base64?: string }> = [];
+                        const ssRegex = /\/api\/screenshots\/([a-zA-Z0-9_\-]+\.png)/gi;
+                        let m;
+                        while ((m = ssRegex.exec(msg.content || '')) !== null) {
+                          contentScreenshots.push({
+                            name: m[1],
+                            url: `http://localhost:8000/api/screenshots/${m[1]}`,
+                            caption: `Screenshot: ${m[1]}`
+                          });
+                        }
+                        const combinedScreenshots = [
+                          ...(msg.screenshots || []).map(ss => ({
+                            ...ss,
+                            url: ss.url?.startsWith('http') ? ss.url : `http://localhost:8000${ss.url}`
+                          })),
+                          ...contentScreenshots
+                        ];
+                        const mentionsScreenshot = /screenshot|preview\s+app|verify\s+ui/i.test(msg.content || '');
+
+                        if (combinedScreenshots.length > 0) {
+                          return (
+                            <div className="mt-4 pt-4 border-t border-border/40 space-y-3">
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2 text-xs font-mono font-bold text-emerald-400 uppercase tracking-wider">
+                                  <Camera className="w-4 h-4 text-emerald-400" />
+                                  <span>App Preview & Verification Screenshots ({combinedScreenshots.length})</span>
+                                </div>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => { setIsCanvasOpen(true); setCanvasActiveTab('preview'); }}
+                                  className="h-7 text-xs text-muted-foreground hover:text-foreground gap-1"
+                                >
+                                  <Eye className="w-3.5 h-3.5" />
+                                  <span>Open in Canvas</span>
+                                </Button>
+                              </div>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                {combinedScreenshots.map((ss, sIdx) => (
+                                  <div 
+                                    key={sIdx} 
+                                    className="group relative bg-black/90 border border-border/70 rounded-xl overflow-hidden cursor-pointer hover:border-emerald-500/70 transition-all duration-200 shadow-lg"
+                                    onClick={() => setSelectedImageModal({ url: ss.image_base64 || ss.url, caption: ss.caption || ss.name })}
+                                  >
+                                    <div className="aspect-video relative overflow-hidden bg-muted/20">
+                                      <img 
+                                        src={ss.image_base64 || ss.url} 
+                                        alt={ss.caption || ss.name} 
+                                        className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                                        onError={(e) => {
+                                          (e.target as HTMLElement).style.display = 'none';
+                                        }}
+                                      />
+                                      <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                        <span className="flex items-center gap-1.5 bg-emerald-500 text-black px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-wider shadow-md rounded">
+                                          <Eye className="w-3.5 h-3.5" /> View Fullscreen
+                                        </span>
+                                      </div>
+                                    </div>
+                                    <div className="p-2.5 bg-card/90 flex items-center justify-between text-xs font-mono text-muted-foreground border-t border-border/50">
+                                      <span className="truncate max-w-[200px]">{ss.caption || ss.name}</span>
+                                      <span className="text-[10px] text-emerald-400">Verified</span>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          );
+                        }
+
+                        if (mentionsScreenshot || activePreviewHtml) {
+                          return (
+                            <div className="mt-4 p-3.5 rounded-2xl bg-gradient-to-r from-purple-950/40 to-slate-900/80 border border-purple-500/40 flex items-center justify-between gap-3 text-xs shadow-lg animate-in fade-in duration-200">
+                              <div className="flex items-center gap-3 min-w-0">
+                                <div className="w-9 h-9 rounded-xl bg-purple-500/20 border border-purple-500/40 flex items-center justify-center text-xl shrink-0">
+                                  📸
+                                </div>
+                                <div className="min-w-0">
+                                  <div className="font-semibold text-purple-200 text-xs flex items-center gap-1.5">
+                                    <span>Live App UI Preview & Verification Ready</span>
+                                  </div>
+                                  <div className="text-[11px] text-muted-foreground truncate">
+                                    Rendered in Workspace. Click to view live interactive canvas or fullscreen preview.
                                   </div>
                                 </div>
-                                {ss.caption && (
-                                  <div className="p-2 bg-muted/40 font-mono text-[11px] text-muted-foreground border-t border-border/30 truncate">
-                                    📸 {ss.caption}
-                                  </div>
-                                )}
                               </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
+                              <div className="flex items-center gap-2 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setIsCanvasOpen(true);
+                                    setCanvasActiveTab('preview');
+                                  }}
+                                  className="px-3 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-semibold text-xs flex items-center gap-1.5 transition-all shadow-md shadow-purple-500/20 cursor-pointer"
+                                >
+                                  <Eye className="w-3.5 h-3.5" />
+                                  <span>Open Live Preview</span>
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        }
 
-
-
+                        return null;
+                      })()}
 
                       {msg.total_tokens !== undefined && msg.total_tokens > 0 && (
                         <div className="mt-4 pt-2 border-t border-border/20 flex gap-4 text-[10px] font-mono text-muted-foreground uppercase tracking-wider animate-in fade-in duration-300">
@@ -3400,6 +3487,19 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
                 </div>
               )}
 
+              {isUserScrolledUp && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsUserScrolledUp(false);
+                    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+                  }}
+                  className="sticky bottom-3 float-right mr-3 z-30 px-3.5 py-1.5 rounded-full bg-slate-900/90 hover:bg-slate-800 text-slate-200 hover:text-white text-xs font-mono border border-slate-700 shadow-2xl flex items-center gap-2 backdrop-blur-md transition-all cursor-pointer animate-in fade-in slide-in-from-bottom-2"
+                >
+                  <span>Scroll to bottom</span>
+                  <ChevronDown className="w-3.5 h-3.5" />
+                </button>
+              )}
               <div ref={messagesEndRef} />
             </div>
 

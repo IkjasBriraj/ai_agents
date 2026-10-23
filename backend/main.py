@@ -449,6 +449,9 @@ os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
 os.makedirs(DOCUMENTS_DIR, exist_ok=True)
 app.mount("/api/screenshots", StaticFiles(directory=SCREENSHOTS_DIR), name="screenshots")
 app.mount("/api/documents", StaticFiles(directory=DOCUMENTS_DIR), name="documents")
+from agents.config import IMAGE_OUTPUT_DIR
+os.makedirs(IMAGE_OUTPUT_DIR, exist_ok=True)
+app.mount("/api/generated-images", StaticFiles(directory=IMAGE_OUTPUT_DIR), name="generated_images")
 from agents.config import AGENT_WORKSPACE_DIR
 os.makedirs(AGENT_WORKSPACE_DIR, exist_ok=True)
 app.mount("/api/workspace/live", StaticFiles(directory=AGENT_WORKSPACE_DIR, html=True), name="workspace_live")
