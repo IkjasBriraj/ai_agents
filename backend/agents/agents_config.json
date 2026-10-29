@@ -1,6 +1,8 @@
 {
   "agent_tools": {
     "code": [
+      "search_topic_image",
+      "generate_presentation",
       "generate_image",
       "batch_verify_and_repair_files",
       "execute_code",
@@ -38,15 +40,16 @@
       "search_symbols",
       "get_file_outline",
       "query_codebase",
-      "edit_file",
       "batch_verify_and_repair_files",
       "verify_app_browser_console",
       "browser_open_url",
       "browser_get_console_errors",
       "browser_take_screenshot",
-      "browser_vision_audit"
+      "browser_vision_audit",
+      "delegate_to_sub_agent"
     ],
     "business": [
+      "search_topic_image",
       "generate_image",
       "web_search",
       "fetch_web_page",
@@ -58,6 +61,7 @@
     ],
     "ppt_generator": [
       "generate_presentation",
+      "search_topic_image",
       "generate_image",
       "web_search",
       "fetch_web_page",
@@ -66,6 +70,7 @@
     ],
     "ppt-generater": [
       "generate_presentation",
+      "search_topic_image",
       "generate_image",
       "web_search",
       "fetch_web_page",

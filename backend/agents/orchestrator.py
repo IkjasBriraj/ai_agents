@@ -201,13 +201,14 @@ You have full authority to analyze any user request, evaluate the catalog of ava
             },
             {
                 "id": "analyze_and_fix",
-                "name": "Surgical Debug & Modification Worker",
-                "role": "Multi-File Bug Fixer, Refactorer & UI/Code Modifier",
+                "name": "Analysis Report -> Surgical Code Agent Pipeline",
+                "role": "Two-Stage Diagnostic Report (Analysis Agent) + Surgical Block Editor (Code Agent)",
                 "capabilities": (
-                    "Fixes bugs, errors, crashes, or broken code; modifies, updates, restyles, or improves existing files/layouts/colors/components; "
-                    "performs multi-file root-cause diagnostics, AST validation, and browser vision verification."
+                    "Used whenever the user wants to fix something, make something better, improve an existing app/file, or add a new feature to existing code. "
+                    "Stage 1: Analysis Agent inspects the files (read-only) and generates a structured Diagnostic & Surgical Change Report. "
+                    "Stage 2: Code Agent receives the report and applies ONLY surgical block edits (edit_file / patch) without rewriting entire files."
                 ),
-                "tools": ["file_operation", "edit_file", "grep_search", "search_symbols", "browser_vision_audit", "batch_verify_and_repair_files"],
+                "tools": ["file_operation", "edit_file", "grep_search", "search_symbols", "delegate_to_sub_agent", "batch_verify_and_repair_files"],
                 "built_in": True,
             },
             {
@@ -218,18 +219,18 @@ You have full authority to analyze any user request, evaluate the catalog of ava
                     "Searches the live web, scrapes URLs, investigates technologies, compares frameworks, "
                     "gathers factual information, and synthesizes comprehensive markdown research reports."
                 ),
-                "tools": ["web_search", "fetch_web_page", "firecrawl", "summarize_text"],
+                "tools": ["web_search", "fetch_web_page", "firecrawl", "summarize_text", "delegate_to_sub_agent"],
                 "built_in": True,
             },
             {
                 "id": "analysis",
                 "name": "Architecture & Code Audit Worker",
-                "role": "Read-Only Static Code Reviewer & Security Auditor",
+                "role": "Read-Only Static Code Reviewer, Report Generator & Dispatcher",
                 "capabilities": (
-                    "Performs read-only code quality reviews, security vulnerability audits, performance bottleneck analysis, "
-                    "and architectural critiques without modifying files (use when the user only wants an audit/review, not fixes)."
+                    "Performs strictly read-only code quality reviews, root-cause diagnostics, and surgical change reports without modifying files directly; "
+                    "passes the diagnostic report to the Code Agent (via delegate_to_sub_agent) when code fixes or new features are needed."
                 ),
-                "tools": ["analyze_code", "file_operation", "search_symbols", "get_file_outline", "query_codebase"],
+                "tools": ["analyze_code", "file_operation", "search_symbols", "get_file_outline", "query_codebase", "delegate_to_sub_agent"],
                 "built_in": True,
             },
             {
@@ -301,7 +302,11 @@ You have full authority to analyze any user request, evaluate the catalog of ava
             wid = "ppt_generator"
         elif any(k in req_lower for k in ["csv", "spreadsheet", "excel", "xlsx", "financial", "business plan", "revenue", "budget", "generate image", "create image", "draw "]):
             wid = "business"
-        elif any(k in req_lower for k in ["fix", "debug", "broken", "not working", "change the", "modify the", "update the", "refactor"]):
+        elif any(k in req_lower for k in [
+            "fix", "debug", "broken", "not working", "change the", "modify", "update", "refactor",
+            "make it better", "make something better", "improve", "enhance", "add a feature", "add feature",
+            "add a new", "add support for", "add button", "add section", "add toggle", "add mode"
+        ]):
             wid = "analyze_and_fix"
         elif any(k in req_lower for k in ["analyze", "audit", "review code", "check code"]) and "fix" not in req_lower:
             wid = "analysis"
@@ -422,9 +427,9 @@ AVAILABLE WORKER CATALOG:
 
 DECISION GUIDELINES (GENERIC INTENT ANALYSIS):
 - Evaluate the user's goal, required tools, and conversation context.
-- Spawn "code" when the user wants to build/create new software, websites, apps, scripts, write new files, run terminal commands, or schedule recurring tasks.
-- Spawn "analyze_and_fix" when the user wants to fix bugs/errors/crashes OR modify, update, restyle, or improve existing files/code.
-- Spawn "analysis" when the user ONLY wants a code review, static analysis, or security/performance audit of code WITHOUT modifying files.
+- Spawn "code" ONLY when the user wants to build/create a brand-new software project, website, app, or script from scratch, run terminal commands, or schedule recurring tasks.
+- Spawn "analyze_and_fix" whenever the user wants to fix bugs/errors/crashes, make something better, improve/enhance existing code, modify/update existing files, OR add a new feature/component to an existing app (Analysis Agent analyzes & generates the report -> Code Agent applies surgical block edits).
+- Spawn "analysis" when the user wants a read-only code review, diagnostic report, or architectural analysis (Analysis Agent will also pass work to Code Agent via delegate_to_sub_agent if code changes are needed).
 - Spawn "ppt_generator" when the user wants PowerPoint presentations, slide decks, pitch decks, PPTs, or slideshows on ANY topic (with searched images).
 - Spawn "research" when the user wants information gathering, web searches, comparisons, explanations of topics, or industry research.
 - Spawn "business" when the user wants spreadsheets (CSV/Excel), financial models, business plans, or AI image generation.
@@ -491,6 +496,32 @@ Respond with ONLY a valid JSON object (no markdown fences, no extra text) in thi
             routing_reason = decision["reasoning"]
             confidence = decision["confidence"]
             execution_focus = decision["execution_focus"]
+
+            # Ensure any request to fix, make better, improve, or add a feature to existing workspace files
+            # routes through the two-stage Analysis Report -> Surgical Code Agent pipeline (analyze_and_fix)
+            if selected_agent in ["code", "analysis"]:
+                req_l = user_request.lower()
+                is_brand_new_build = any(p in req_l for p in [
+                    "from scratch", "build a new", "create a new", "make a new",
+                    "build an app", "create an app", "make an app", "create a website",
+                    "build a website", "make a website"
+                ])
+                is_incremental_change = any(p in req_l for p in [
+                    "fix", "debug", "broken", "not working", "error", "bug", "issue",
+                    "better", "improve", "enhance", "upgrade", "optimize", "refactor",
+                    "modify", "update", "change", "add a feature", "add feature",
+                    "add a new", "add button", "add section", "add toggle", "add support"
+                ])
+                if is_incremental_change and not is_brand_new_build:
+                    from .config import AGENT_WORKSPACE_DIR
+                    has_existing_files = any(
+                        os.path.exists(os.path.join(AGENT_WORKSPACE_DIR, fn))
+                        for fn in ["index.html", "main.py", "app.py", "style.css", "script.js"]
+                    )
+                    if has_existing_files and "analyze_and_fix" in catalog_map:
+                        selected_agent = "analyze_and_fix"
+                        worker_name = catalog_map["analyze_and_fix"]["name"]
+                        routing_reason = "Incremental fix/improvement/feature request on existing project -> Analysis Agent generates report first, then Code Agent applies surgical block edits." 
 
         # Store routing metadata in context
         context["worker_name"] = worker_name
@@ -754,8 +785,25 @@ Conversation History:
                 HumanMessage(content=state["user_request"])
             ])
             state["agent_response"] = response.content
-        elif selected_agent in ["analyze_and_fix", "analysis"]:
+        elif selected_agent == "analyze_and_fix":
             state["agent_response"] = self._analyze_and_fix(user_request, context, session_id=session_id, callbacks=callbacks)
+        elif selected_agent == "analysis":
+            req_l = user_request.lower()
+            needs_code_change = any(k in req_l for k in [
+                "fix", "debug", "broken", "not working", "better", "improve", "enhance",
+                "add ", "modify", "update", "change", "implement", "feature", "refactor"
+            ])
+            if needs_code_change:
+                state["agent_response"] = self._analyze_and_fix(user_request, context, session_id=session_id, callbacks=callbacks)
+            else:
+                analysis_agent = create_specialized_agent("analysis", self.model_name, self.ollama_base_url)
+                if analysis_agent:
+                    chat_history = multi_agent_memory.get_messages(session_id)
+                    if len(chat_history) > 10:
+                        chat_history = chat_history[-10:]
+                    state["agent_response"] = analysis_agent.process(user_request, context, chat_history=chat_history, callbacks=callbacks)
+                else:
+                    state["agent_response"] = "Error: Could not create Analysis Agent." 
         else:
             agent_model = self.model_name or (DEFAULT_CODE_MODEL if selected_agent == "code" else self.model_name)
             agent = create_specialized_agent(selected_agent, agent_model, self.ollama_base_url)
@@ -880,20 +928,6 @@ If there are critical missing files or broken code, provide a concise list of wh
         from .config import AGENT_WORKSPACE_DIR, SCREENSHOTS_DIR, VISION_MODEL, DEFAULT_CODE_MODEL
 
         thinking_level = (context.get("thinking_level", "medium") if isinstance(context, dict) else "medium").lower()
-
-        # Fast Mode: Run minimal direct fix if low thinking level requested
-        if thinking_level == "low":
-            chat_history = multi_agent_memory.get_messages(session_id)
-            if len(chat_history) > 6:
-                chat_history = chat_history[-6:]
-            code_agent = create_specialized_agent("code", DEFAULT_CODE_MODEL, self.ollama_base_url)
-            if not code_agent:
-                return "Error: Could not create Code Agent for fast fix."
-            fast_fix_task = f"""YOU ARE IN FAST ANALYZE-AND-FIX MODE. Quickly analyze and apply fixes.
-User Request: {user_request}
-Read the relevant files, identify issues, and apply fixes using file_operation(patch) or file_operation(write)."""
-            result = code_agent.process(fast_fix_task, context=context, chat_history=chat_history, callbacks=callbacks)
-            return result if isinstance(result, str) else (result.get("result", str(result)) if isinstance(result, dict) else str(result or ""))
 
         chat_history = multi_agent_memory.get_messages(session_id)
         if len(chat_history) > 10:
@@ -1113,90 +1147,70 @@ CANDIDATE FILES ANALYZED FOR THIS REQUEST:
             codebase_intel += f"\n\nUI VISION AUDIT:\n{vision_report}"
 
         # =====================================================================
-        # Phase 2: Deep Diagnostics by Analysis Agent
+        # Phase 2: Read-Only Diagnostic & Surgical Change Report by Analysis Agent
         # =====================================================================
-        emit_thinking("\n🔬 Phase 2: Running Analysis Agent for deep architectural diagnostics & root-cause analysis...")
+        emit_thinking("\n🔬 Phase 2: Analysis Agent is inspecting the code and generating a Diagnostic & Surgical Change Report...")
         analysis_agent = create_specialized_agent("analysis", self.model_name, self.ollama_base_url)
 
-        analysis_task = f"""YOU ARE IN DEEP CODEBASE ANALYSIS & DIAGNOSTICS MODE.
+        analysis_task = f"""[PIPELINE MODE: REPORT ONLY — DO NOT EDIT FILES DIRECTLY]
 User Request: {user_request}
 
 {codebase_intel}
 
-TASK:
-Perform deep multi-file analysis and produce a precise, structured DIAGNOSTIC & FIX BLUEPRINT:
-1. ROOT CAUSE ANALYSIS: Explain exactly what is failing, missing, or needs modification, tracing the relevant code flow.
-2. AFFECTED FILES: List every file that needs changes with its relative path.
-3. CROSS-FILE IMPACT: Explain how changes in one file affect other modules, imports, or visual layouts.
-4. SURGICAL FIX SPECIFICATIONS: Concrete instructions on what to patch, rewrite, or add in each file.
-5. QUALITY & PRESERVATION RULES: Emphasize preserving existing functionality, dark-mode styling, and design systems.
+YOUR MANDATE AS ANALYSIS AGENT:
+1. You are strictly READ-ONLY. Inspect the relevant files (using `file_operation(operation="read")` if you need lines beyond the excerpt above) and NEVER write or rewrite files yourself.
+2. Produce a clear, structured **DIAGNOSTIC & SURGICAL CHANGE REPORT** to hand over to the Code Agent:
+   - **ROOT CAUSE / FEATURE & IMPROVEMENT ANALYSIS**: Explain exactly what needs to be fixed, improved, or added and why.
+   - **TARGET FILES & EXACT ANCHOR LOCATION**: Identify the exact file(s) and specific section/function/lines to touch.
+   - **SURGICAL SEARCH & REPLACE BLOCKS (MINIMAL DIFF ONLY)**: Provide the exact 3–15 existing anchor lines (`SEARCH`) and the minimal updated/added block (`REPLACE`) for the Code Agent to apply via `edit_file`. NEVER rewrite the entire file!
+   - **PRESERVATION & DEPLOYMENT CHECKLIST**: List all existing features, styles, layouts, and logic that must remain 100% untouched.
 
-Be thorough, precise, and actionable."""
+Output your complete Diagnostic & Surgical Change Report as your Final Answer so it can be passed directly to the Code Agent."""
 
         analysis_blueprint = ""
         if analysis_agent:
             try:
-                analysis_raw = analysis_agent.process(analysis_task, context=context, chat_history=chat_history, callbacks=callbacks)
+                analysis_ctx = dict(context) if isinstance(context, dict) else {}
+                analysis_ctx["in_analyze_and_fix_pipeline"] = True
+                analysis_ctx["agent_type"] = "analysis"
+                analysis_raw = analysis_agent.process(analysis_task, context=analysis_ctx, chat_history=chat_history, callbacks=callbacks)
                 analysis_blueprint = analysis_raw.get("result", str(analysis_raw)) if isinstance(analysis_raw, dict) else str(analysis_raw or "")
-                emit_thinking("\n✅ Phase 2 Complete: Root cause diagnosed and surgical fix blueprint formulated.")
+                emit_thinking("\n✅ Phase 2 Complete: Analysis Agent generated the Diagnostic & Surgical Change Report. Passing report over to Code Agent...")
             except Exception as ae:
                 analysis_blueprint = f"Diagnostic analysis note: {ae}"
                 emit_thinking(f"\n⚠️ Analysis note: {ae}")
 
         # =====================================================================
-        # Phase 3: Surgical Fix Execution by Code Agent
+        # Phase 3: Surgical Block Execution by Code Agent (Handoff from Analysis Agent)
         # =====================================================================
-        emit_thinking("\n🛠️ Phase 3: Dispatching Code Agent to execute precision fixes based on diagnostic blueprint...")
+        emit_thinking("\n🤝🛠️ Phase 3: Code Agent received the Analysis Report and is applying surgical block edits (`edit_file`)...")
         code_agent = create_specialized_agent("code", DEFAULT_CODE_MODEL, self.ollama_base_url)
         if not code_agent:
             return "Error: Could not create Code Agent for fix execution."
 
-        fix_task = f"""YOU ARE IN PRECISION CODE EXECUTION MODE.
+        fix_task = f"""[HANDOFF FROM ANALYSIS AGENT — SURGICAL BLOCK EDIT MODE]
 User Request: {user_request}
 
-DIAGNOSTIC & FIX BLUEPRINT FROM ANALYSIS AGENT:
+DIAGNOSTIC & SURGICAL CHANGE REPORT FROM ANALYSIS AGENT:
 {analysis_blueprint}
 
 TARGET CODE FILES:
 {", ".join(candidate_files) if candidate_files else "Workspace Files"}
 
-EXECUTION MANDATE:
-1. Apply the fixes to ALL required files using `file_operation(patch)` for surgical edits or `file_operation(write)` for complete files.
-2. HIGH CONTRAST & LEGIBILITY MANDATE: Text MUST be crisp, high contrast, and fully readable. Never use faint low-opacity text on dark backgrounds.
-3. PRESERVE all existing working features, Tailwind CDN, Google Fonts, glassmorphism design, and interactivity.
-4. Apply fixes across every relevant file so everything remains cohesive."""
+STRICT SURGICAL EXECUTION MANDATE FOR CODE AGENT:
+1. Read the target file(s) with `file_operation(operation="read")` if needed to verify exact surrounding lines.
+2. Apply ONLY the minimal surgical block edit(s) specified in the Analysis Report using `edit_file`:
+   Action: edit_file
+   Action Input: {{"path": "<file_path>", "search": "<exact 3-15 existing lines from file>", "replace": "<updated/added lines>"}}
+   (or `file_operation` with `"operation": "patch"`).
+3. NEVER REWRITE THE ENTIRE FILE FROM SCRATCH (`file_operation(write)` is strictly forbidden on existing files)! Only add or edit the specific block of code required.
+4. Preserve 100% of existing working code, layout, styling, imports, and features outside the edited block."""
 
-        fix_result = code_agent.process(fix_task, context=context, chat_history=chat_history, callbacks=callbacks)
+        code_ctx = dict(context) if isinstance(context, dict) else {}
+        code_ctx["surgical_edit_only"] = True
+        code_ctx["agent_type"] = "code"
+        fix_result = code_agent.process(fix_task, context=code_ctx, chat_history=chat_history, callbacks=callbacks)
         fix_text = fix_result.get("result", str(fix_result)) if isinstance(fix_result, dict) else str(fix_result or "")
-
-        # Auto-apply safety check: If files were output as code blocks, write them to disk matching file types
-        if fix_text and "```" in fix_text:
-            file_block_matches = re.findall(r'(?:(?:file|filename|path|created|wrote|output|###|\*\*|`)\s*[:`*]*\s*([a-zA-Z0-9_\-\.\/\\]+\.[a-zA-Z0-9]+)[`*:\s]*\n+)?```([a-zA-Z0-9_\-\:\=]*)\n([\s\S]+?)```', fix_text, re.IGNORECASE)
-            for path_hint, lang_tag, code_content in file_block_matches:
-                code_content = code_content.strip()
-                if not code_content or len(code_content) < 5 or (code_content.startswith("{") and "Action:" in code_content):
-                    continue
-                target_p = None
-                if path_hint and ("." in path_hint) and not path_hint.startswith("http") and not path_hint.startswith("json"):
-                    target_p = path_hint.strip("`*# :")
-                elif "css" in lang_tag.lower() or "body {" in code_content or "font-family:" in code_content:
-                    target_p = "css/style.css" if os.path.exists(os.path.join(AGENT_WORKSPACE_DIR, "css", "style.css")) else "style.css"
-                elif "html" in lang_tag.lower() or "<!DOCTYPE html>" in code_content or "<html" in code_content:
-                    target_p = "index.html"
-                elif "js" in lang_tag.lower() or "document.addEventListener" in code_content:
-                    target_p = "js/main.js" if os.path.exists(os.path.join(AGENT_WORKSPACE_DIR, "js", "main.js")) else "script.js"
-                elif "py" in lang_tag.lower() or "def " in code_content or "import " in code_content:
-                    target_p = "main.py"
-
-                if target_p:
-                    abs_p = target_p if os.path.isabs(target_p) else os.path.join(AGENT_WORKSPACE_DIR, target_p)
-                    try:
-                        os.makedirs(os.path.dirname(abs_p), exist_ok=True)
-                        with open(abs_p, "w", encoding="utf-8") as f:
-                            f.write(code_content)
-                        emit_thinking(f"\n⚡ Verified & applied code fixes directly to '{os.path.basename(abs_p)}'!")
-                    except Exception as fw_err:
-                        print(f"Error applying auto-fix for {abs_p}: {fw_err}")
 
         # Iterative validation loop (max 2 retries)
         max_fix_retries = 2
@@ -1242,11 +1256,11 @@ EXECUTION MANDATE:
 
             error_summary = "\n".join(validation_errors[:8])
             emit_thinking(f"\n⚠️ Validation found {len(validation_errors)} syntax error(s) — auto-repairing #{retry_i + 1}...\n{error_summary}")
-            retry_task = f"""VALIDATION ERRORS DETECTED after your previous fix attempt:
+            retry_task = f"""VALIDATION ERRORS DETECTED after your previous surgical edit:
 {error_summary}
 
-Please fix these errors immediately using file_operation(patch) or file_operation(write)."""
-            retry_res = code_agent.process(retry_task, context=context, chat_history=chat_history, callbacks=callbacks)
+Please fix ONLY the broken lines immediately using `edit_file` or `file_operation(operation="patch")`. Do NOT rewrite the entire file."""
+            retry_res = code_agent.process(retry_task, context=code_ctx, chat_history=chat_history, callbacks=callbacks)
             retry_text = retry_res.get("result", str(retry_res)) if isinstance(retry_res, dict) else str(retry_res or "")
             fix_text += f"\n\n### 🔄 Auto-Repair Pass #{retry_i + 1}\n\n{retry_text}"
 
@@ -1334,9 +1348,14 @@ Please fix these errors immediately using file_operation(patch) or file_operatio
             else:
                 rc_section = analysis_blueprint[:400].strip()
 
-        walkthrough_lines.append(f"A comprehensive multi-file codebase audit was performed for the user's request. The root cause was diagnosed, targeted fixes were applied across all affected modules, and the changes were verified.")
-        walkthrough_lines.append("\n## 🔎 Root Cause Analysis")
-        walkthrough_lines.append(rc_section)
+        walkthrough_lines.append(
+            "1. **Analysis Agent (Read-Only Diagnostics)**: Inspected the codebase and generated a structured Diagnostic & Surgical Change Report.\n"
+            "2. **Handoff to Code Agent (Surgical Execution)**: Passed the report to the Code Agent, which applied targeted block edits (`edit_file` / `patch`) without rewriting entire files."
+        )
+        walkthrough_lines.append("\n## 🔬 Analysis Agent — Diagnostic & Surgical Change Report")
+        walkthrough_lines.append(analysis_blueprint.strip() if analysis_blueprint else rc_section)
+        walkthrough_lines.append("\n## 🛠️ Code Agent — Surgical Execution Summary")
+        walkthrough_lines.append(fix_text.strip() if fix_text else "Applied surgical block edits to target files.")
 
         walkthrough_lines.append("\n## 📂 Files Analyzed vs. Modified")
         walkthrough_lines.append("| File | Role / Status | Action Taken |")

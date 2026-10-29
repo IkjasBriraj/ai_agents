@@ -547,18 +547,33 @@ class RobustReActParser(ReActSingleInputOutputParser):
 
             return AgentAction(action, action_input, text)
 
-        # 2. Second priority: Auto-recovery for raw code blocks output by LLMs before checking Final Answer
-        code_blocks = re.findall(r'(?:(?:file|filename|path|created|wrote|output|###|\*\*|`)\s*[:`*]*\s*([a-zA-Z0-9_\-\.\/\\]+\.[a-zA-Z0-9]+)[`*:\s]*\r?\n+)?```([a-zA-Z0-9_\-\:\=\s]*)\r?\n([\s\S]+?)```', text, re.IGNORECASE)
-        if not code_blocks:
-            standard_blocks = re.findall(r'```([a-zA-Z0-9_\-\:\=\s]*)\r?\n([\s\S]+?)```', text)
-            if standard_blocks:
-                code_blocks = [("", tag, content) for tag, content in standard_blocks]
-        if not code_blocks:
-            unclosed_blocks = re.findall(r'```([a-zA-Z0-9_\-\:\=\s]*)\r?\n([\s\S]+)', text)
-            if unclosed_blocks:
-                code_blocks = [("", tag, content) for tag, content in unclosed_blocks]
+        # 2. Second priority: Check for explicit Final Answer marker BEFORE raw code block auto-recovery
+        # so diagnostic reports (from Analysis Agent) or summary snippets (from Code Agent) never overwrite existing files!
+        final_answer_marker = "final answer:"
+        if final_answer_marker in text_lower:
+            final_idx = text_lower.rfind(final_answer_marker)
+            final_ans = text[final_idx + len(final_answer_marker):].strip()
+            return AgentFinish({"output": final_ans}, text)
+
+        # 3. Third priority: Auto-recovery for raw code blocks (ONLY for brand-new files by Code Agent when no tools ran yet)
+        try:
+            from .session_context import current_agent_context
+            _active_ctx = current_agent_context.get() or {}
+        except Exception:
+            _active_ctx = {}
+        _active_agent_type = str(_active_ctx.get("agent_type", "")).lower()
+        _surgical_only = bool(_active_ctx.get("surgical_edit_only", False))
+
+        code_blocks = []
+        if _active_agent_type == "code" and not _surgical_only and not self._previous_actions:
+            code_blocks = re.findall(r'(?:(?:file|filename|path|created|wrote|output|###|\*\*|`)\s*[:`*]*\s*([a-zA-Z0-9_\-\.\/\\]+\.[a-zA-Z0-9]+)[`*:\s]*\r?\n+)?```([a-zA-Z0-9_\-\:\=\s]*)\r?\n([\s\S]+?)```', text, re.IGNORECASE)
+            if not code_blocks:
+                standard_blocks = re.findall(r'```([a-zA-Z0-9_\-\:\=\s]*)\r?\n([\s\S]+?)```', text)
+                if standard_blocks:
+                    code_blocks = [("", tag, content) for tag, content in standard_blocks]
 
         if code_blocks:
+            from .tools import resolve_target_file_path
             project_files = {}
             for path_hint, lang_tag, code_content in code_blocks:
                 code_content = code_content.strip()
@@ -566,8 +581,11 @@ class RobustReActParser(ReActSingleInputOutputParser):
                     continue
                 
                 target_p = extract_file_path_from_code_block(path_hint, code_content, text, getattr(self, '_current_task', text))
-
                 if target_p:
+                    resolved_existing = resolve_target_file_path(target_p)
+                    # Never auto-overwrite an existing non-empty file on disk via raw code block recovery
+                    if os.path.exists(resolved_existing) and os.path.isfile(resolved_existing) and os.path.getsize(resolved_existing) > 200:
+                        continue
                     project_files[target_p] = code_content
 
             if len(project_files) == 1:
@@ -583,13 +601,6 @@ class RobustReActParser(ReActSingleInputOutputParser):
                 if action_key not in self._previous_actions:
                     self._previous_actions.add(action_key)
                     return AgentAction("create_project", act_payload, text)
-
-        # 3. Third priority: Check for explicit Final Answer marker (only after unsaved code blocks are processed)
-        final_answer_marker = "final answer:"
-        if final_answer_marker in text_lower:
-            final_idx = text_lower.rfind(final_answer_marker)
-            final_ans = text[final_idx + len(final_answer_marker):].strip()
-            return AgentFinish({"output": final_ans}, text)
 
         # Auto-recovery for model disclaimers claiming lack of local file system access
         refusal_keywords = [
@@ -620,11 +631,19 @@ class RobustReActParser(ReActSingleInputOutputParser):
             act_input = f'{{"title": "{fname.replace("_", " ").title()}", "filename": "{fname}"}}'
             self._consecutive_counts[f"generate_excel_sheet:{act_input}"] = 1
             return AgentAction("generate_excel_sheet", act_input, text)
-        is_ppt_intent = any(kw in text_lower for kw in ["generate_presentation", "presentation", "ppt", "powerpoint", "slide deck", "pitch deck", "slides"])
+        from .session_context import current_agent_context
+        _ctx = current_agent_context.get() or {}
+        _agent_name_low = str(_ctx.get("agent_name", "")).lower()
+        _task_low = str(_ctx.get("input", "")).lower()
+        is_ppt_intent = (
+            any(kw in text_lower for kw in ["generate_presentation", "presentation", "ppt", "powerpoint", "slide deck", "pitch deck", "slides"])
+            or ("ppt" in _agent_name_low and any(kw in text_lower or kw in _task_low for kw in ["animat", "swipe", "swiping", "transition", "slide", "tap", "answer", "zoom", "bounce", "fade", "theme"]))
+        )
         if is_ppt_intent and "generate_presentation" not in executed_tool_names:
             fname_match = re.search(r'([a-zA-Z0-9_\-]+\.(?:pptx|html))', text)
             fname = fname_match.group(1).split('.')[0] if fname_match else "presentation"
-            act_input = f'{{"title": "{fname.replace("_", " ").title()}", "filename": "{fname}"}}'
+            anim_val = "swipe" if ("swipe" in _task_low or "swiping" in _task_low or "swipe" in text_lower) else ("zoom" if "zoom" in _task_low else ("bounce" if "bounce" in _task_low else "swipe"))
+            act_input = json.dumps({"title": fname.replace("_", " ").title(), "filename": fname, "animation": anim_val})
             self._consecutive_counts[f"generate_presentation:{act_input}"] = 1
             return AgentAction("generate_presentation", act_input, text)
 
@@ -942,6 +961,17 @@ NEVER OUTPUT STATEMENTS OR DISCLAIMERS CLAIMING YOU CANNOT INTERACT WITH LOCAL F
 - Use `search_personal_memory` to check relevant saved user knowledge or preferences.
 - Always confirm to the user when you have stored information into memory.
 
+🤝 UNIVERSAL CROSS-AGENT HANDOFF PROTOCOL (100% GENERIC):
+- You are part of a specialized multi-agent team where each agent has a distinct role:
+  * `analysis` (Analysis Agent): Strictly READ-ONLY codebase & architecture analyst. Inspects files, diagnoses issues, plans improvements or new features, generates a structured Diagnostic & Surgical Change Report, and passes the work over to `code`.
+  * `code` (Code Agent): Software engineer & implementer. Applies surgical block edits (`edit_file` / `file_operation(patch)`) to fix bugs, improve code, or add new features to existing files without rewriting entire files, or creates brand-new projects when no files exist yet.
+  * `research` (Research Agent): Web researcher & knowledge synthesizer. Gathers live facts, documentation, benchmarks, and domain insights.
+  * `business` (Business Agent): Financial modeler, Excel spreadsheet creator (`generate_excel_sheet`), business strategist, and AI image generator.
+  * `ppt_generator` (PPT Generator Agent): Presentation designer (`generate_presentation`). Creates PowerPoint (.pptx) and interactive HTML slide decks with topic images, animations, and quizzes.
+- PASSING WORK OVER MANDATE: If you recognize that the user's request (or the next phase of the task after your analysis/work is done) is the responsibility of another specialized agent, you MUST pass the work over to that agent using `delegate_to_sub_agent`:
+  Action: delegate_to_sub_agent
+  Action Input: {{{{"sub_agent_id": "<analysis|code|research|business|ppt_generator>", "task": "<complete context, instructions, or diagnostic report for the target agent>"}}}}
+
 {escaped_system_prompt}
 
 You have access to the following tools:
@@ -1038,20 +1068,19 @@ Thought: {{agent_scratchpad}}"""
 
         try:
             context_dict = context if isinstance(context, dict) else ({"context_str": str(context)} if context else {})
-            ctx_data = {
+            ctx_data = dict(context_dict)
+            ctx_data.update({
                 "session_id": context_dict.get("session_id", "default"),
                 "input": task,
-                "agent_name": self.name
-            }
-            if "queue" in context_dict and "loop" in context_dict:
-                ctx_data["queue"] = context_dict["queue"]
-                ctx_data["loop"] = context_dict["loop"]
+                "agent_name": self.name,
+                "agent_type": self.agent_type,
+            })
             token = current_agent_context.set(ctx_data)
 
             executor_to_use = self.agent_executor
 
             if context_dict:
-                clean_context = {k: v for k, v in context_dict.items() if k not in ["queue", "loop", "session_id", "context_str"]}
+                clean_context = {k: v for k, v in context_dict.items() if k not in ["queue", "loop", "session_id", "context_str", "thinking_callback", "_delegation_depth", "in_analyze_and_fix_pipeline", "surgical_edit_only", "allow_full_rewrite", "agent_type", "agent_name", "input"]}
                 thinking_level = str(clean_context.pop("thinking_level", "medium")).lower()
                 provider = str(clean_context.pop("provider", "ollama")).lower()
                 model_override = clean_context.pop("model", None)
@@ -1159,7 +1188,7 @@ Thought: {{agent_scratchpad}}"""
                     if isinstance(step, tuple) and len(step) > 0:
                         text_to_scan += "\n" + str(step[0])
 
-            if self.agent_type == "code" and no_files_modified and text_to_scan and "```" in text_to_scan:
+            if self.agent_type == "code" and no_files_modified and not ctx_data.get("surgical_edit_only") and text_to_scan and "```" in text_to_scan:
                 try:
                     from .tools import parse_project_files_from_raw_text, write_file_content, batch_verify_and_repair_files
                     parsed_files = parse_project_files_from_raw_text(text_to_scan)
@@ -1178,17 +1207,42 @@ Thought: {{agent_scratchpad}}"""
                 except Exception as fw_err:
                     print(f"[FALLBACK FILE WRITER] Error writing parsed files: {fw_err}")
 
-                        # Direct PPT Generation Fallback: If PPT Generator or Business Agent ran on a presentation task but created 0 files
-            is_ppt_task = (self.agent_type in ["ppt_generator", "ppt-generater", "presentation", "business"]) and any(
-                w in task.lower() for w in ["ppt", "presentation", "powerpoint", "slide", "slides", "pitch deck"]
+            # Extract clean user prompt without prepended [SYSTEM DIRECTIVE...]
+            user_prompt_lines = [
+                ln for ln in task.splitlines()
+                if not ln.strip().startswith("[SYSTEM DIRECTIVE") and not ln.strip().startswith("Context Details:")
+            ]
+            clean_user_task = "\n".join(user_prompt_lines).strip() or task
+
+            # Ensure if generate_presentation was executed during intermediate_steps, its /api/documents/ URLs are present in output_text
+            if isinstance(result, dict) and "intermediate_steps" in result:
+                for step in result["intermediate_steps"]:
+                    if isinstance(step, tuple) and len(step) >= 2:
+                        act_obj, obs_text = step[0], str(step[1])
+                        if getattr(act_obj, "tool", "") == "generate_presentation" and "/api/documents/" in obs_text:
+                            if "/api/documents/" not in output_text:
+                                output_text = f"{output_text}\n\n---\n{obs_text}".strip()
+
+            # Direct PPT Generation Fallback: If PPT Generator, Business Agent, or Code Agent ran on a presentation/animation task but created 0 files
+            is_ppt_task = (
+                self.agent_type in ["ppt_generator", "ppt-generater", "presentation"]
+                or (
+                    self.agent_type in ["business", "code"]
+                    and any(w in clean_user_task.lower() for w in ["ppt", "presentation", "powerpoint", "slide deck", "pitch deck"])
+                )
+            ) and any(
+                w in clean_user_task.lower()
+                for w in ["ppt", "presentation", "powerpoint", "slide", "slides", "pitch deck", "animat", "swipe", "swiping", "transition", "tap", "answer", "theme"]
             )
             if is_ppt_task and no_files_modified:
-                print(f"[DIRECT PPT WRITER] Agent modified 0 files for presentation task: '{task[:80]}'. Generating presentation deck automatically...")
+                print(f"[DIRECT PPT WRITER] Agent modified 0 files for presentation task: '{clean_user_task[:80]}'. Generating presentation deck automatically...")
                 try:
                     from .business_tools import generate_presentation
-                    clean_title = re.sub(r'[^a-zA-Z0-9 ]', '', task.split('\n')[0])[:50].strip() or "Executive Presentation"
+                    first_user_line = clean_user_task.split('\n')[0]
+                    clean_title = re.sub(r'[^a-zA-Z0-9 ]', '', first_user_line)[:50].strip() or "Executive Presentation"
                     clean_file = re.sub(r'[^a-zA-Z0-9_]', '_', clean_title.lower()).strip('_')[:30] or "presentation"
-                    res = generate_presentation(title=clean_title, filename=clean_file)
+                    req_anim = "swipe" if ("swipe" in clean_user_task.lower() or "swiping" in clean_user_task.lower()) else ("zoom" if "zoom" in clean_user_task.lower() else ("bounce" if "bounce" in clean_user_task.lower() else "swipe"))
+                    res = generate_presentation(title=clean_title, filename=clean_file, animation=req_anim)
                     print(f"[DIRECT PPT WRITER] Created Presentation file: {res}")
                     no_files_modified = False
                     if not output_text or "Agent stopped" in output_text or len(output_text) < 40:
@@ -1225,7 +1279,7 @@ Thought: {{agent_scratchpad}}"""
             is_explanatory_only = bool(re.match(r'^\s*(explain|what\s+is|how\s+does|describe|compare)\b', task.split("\n")[-1], re.IGNORECASE)) and not any(
                 w in task.lower() for w in ["write", "create", "build", "make", "implement", "generate", "fix", "update", "refactor", "file", "app", "script", "code"]
             )
-            if self.agent_type == "code" and no_files_modified and not is_explanatory_only:
+            if self.agent_type == "code" and no_files_modified and not ctx_data.get("surgical_edit_only") and not is_explanatory_only:
                 print(f"[DIRECT FILE WRITER] Code Agent modified 0 files for task: '{task[:80]}'. Running generic polyglot generation pass...")
                 try:
                     from .tools import parse_project_files_from_raw_text, write_file_content, batch_verify_and_repair_files
@@ -1355,12 +1409,18 @@ You MUST invoke tools to create or modify files in `{AGENT_WORKSPACE_DIR}` (neve
 - **Multiple files at once (New projects / modules)**: Prefer `create_project` with a JSON dictionary mapping relative file paths to their full code content:
   Action: create_project
   Action Input: {{"src/models.py": "...", "src/service.py": "...", "main.py": "...", "README.md": "..."}}
-- **Single new file or full file rewrite**: Use `file_operation` with `"operation": "write"`:
-  Action: file_operation
-  Action Input: {{"operation": "write", "path": "path/to/file.ext", "content": "<complete code>"}}
-- **Surgical edit to an existing file**: Prefer `edit_file` (fuzzy search-and-replace) or `file_operation` with `"operation": "patch"`:
+- **SURGICAL BLOCK EDIT TO ANY EXISTING FILE (MANDATORY FOR FIXES, IMPROVEMENTS & NEW FEATURES)**:
+  When fixing a bug, making something better, or adding a new feature to a file that ALREADY EXISTS on disk, you MUST NEVER rewrite the entire file from scratch!
+  Instead, read the file first (`file_operation(operation="read")`) and use `edit_file` (or `file_operation(operation="patch")`) to add or modify ONLY the specific small block of code required:
   Action: edit_file
-  Action Input: {{"path": "path/to/file.ext", "search": "<exact existing lines>", "replace": "<updated lines>"}}
+  Action Input: {{"path": "path/to/file.ext", "search": "<exact 3-15 existing lines from the file>", "replace": "<updated lines containing only your fix or added feature block>"}}
+  This preserves 100% of the existing application's layout, styling, logic, and unrelated features for production deployment readiness.
+- **Single brand-new file creation (ONLY when the file does not exist yet)**: Use `file_operation` with `"operation": "write"`:
+  Action: file_operation
+  Action Input: {{"operation": "write", "path": "path/to/new_file.ext", "content": "<complete code>"}}
+- **CROSS-AGENT HANDOFF**: If you see that the user's request belongs to another specialist (`analysis` for pure read-only audit/report, `research` for web research, `business` for Excel spreadsheets/finance, `ppt_generator` for presentations), pass the work over using `delegate_to_sub_agent`:
+  Action: delegate_to_sub_agent
+  Action Input: {{"sub_agent_id": "<target_agent_id>", "task": "<context and instructions>"}}
 
 #### PHASE 4 — VERIFY, TEST & SELF-HEAL
 - After writing or editing files, ALWAYS verify your work before finishing:
@@ -1376,6 +1436,8 @@ You MUST invoke tools to create or modify files in `{AGENT_WORKSPACE_DIR}` (neve
 - **When building Web UIs / HTML / CSS / JS**:
   * Place primary entry files (`index.html`, etc.) directly in `{AGENT_WORKSPACE_DIR}` (unless the user requested a specific subfolder, in which case also keep `{AGENT_WORKSPACE_DIR}/index.html` updated for instant preview).
   * Craft modern, responsive, high-contrast, accessible UI with semantic HTML5, smooth interactive JavaScript state, keyboard/mouse ergonomics, and cohesive styling (Tailwind CSS CDN `<script src="https://cdn.tailwindcss.com"></script>`, Google Fonts Inter/Outfit, and Lucide icons `<script src="https://unpkg.com/lucide@latest"></script>` with `lucide.createIcons()` when appropriate).
+  * **TOPIC-RELATED REAL IMAGES MANDATE**: Just like the PPT Agent, whenever you build a website, landing page, dashboard, or app on ANY topic, embed real topic-related images! Either call `search_topic_image` (`Action: search_topic_image`, `Action Input: {{"query": "<specific 2-4 word topic subject>", "filename": "<clean_name>"}}`) to get a local `http://localhost:8000/api/generated-images/<name>` URL, OR include descriptive `data-topic="<specific topic keywords>"` and `alt="<specific subject>"` attributes on every `<img>` tag so our pipeline automatically searches and embeds real topic-matched images!
+  * **PRESENTATION & SLIDE DECK SUPPORT**: If the user asks you (Code Agent) to create a presentation, PPT, or interactive slide deck with topic-related images and animations, you can call `generate_presentation` directly OR build an interactive HTML presentation with embedded topic images.
   * Ensure every linked local stylesheet (`css/style.css`) or script (`js/main.js`) is actually created on disk so there are zero 404 errors.
 - **When building Next.js / React / TypeScript Applications**:
   * Keep `app/layout.tsx` as a Server Component importing `'./globals.css'`.
@@ -1427,9 +1489,9 @@ Execution Mandate:
 
 Execution Steps:
 1. Read `{filepath}` using `file_operation(operation="read", path="{filepath}")`.
-2. Analyze the root cause of each reported issue while preserving all existing working functionality, architecture, and styling.
-3. Apply the fix using `edit_file` (or `file_operation` with `patch` / `write`).
-4. Verify the repaired file using `batch_verify_and_repair_files` (`{{"files": ["{filepath}"]}}`) and confirm what was fixed."""
+2. Locate the exact lines/blocks identified in the report while preserving 100% of existing working functionality, architecture, and styling.
+3. Apply ONLY surgical block edits using `edit_file` (`{{"path": "{filepath}", "search": "<existing block>", "replace": "<fixed/added block>"}}`) or `file_operation(operation="patch")`. NEVER rewrite the entire file from scratch!
+4. Verify the repaired file using `batch_verify_and_repair_files` (`{{"files": ["{filepath}"]}}`) and confirm the surgical changes applied."""
 
         result = self.process(task, context=context, chat_history=chat_history, callbacks=callbacks)
 
@@ -1459,7 +1521,10 @@ When given a research task:
 2. Attempt to gather live information using web_search and fetch_web_page.
 3. If live web search returns few or no results or is unavailable, IMMEDIATELY use your extensive internal knowledge to provide an in-depth, structured, professional research breakdown.
 4. Present clear, actionable insights with structural sections (Overview, Key Concepts, Current Trends, Best Practices, Challenges, Recommendations).
-5. NEVER respond with empty text, refusal, or unhelpful error messages. ALWAYS provide a rich, complete research answer."""
+5. NEVER respond with empty text, refusal, or unhelpful error messages. ALWAYS provide a rich, complete research answer.
+6. CROSS-AGENT HANDOFF MANDATE (100% GENERIC): If you see that the user's request (or the next phase of the work after your research is complete) belongs to another specialized agent — such as `analysis` (codebase inspection & diagnostic report), `code` (writing or surgically editing code), `business` (Excel spreadsheets & financial modeling), or `ppt_generator` (PowerPoint & HTML slide decks) — pass the work over immediately using `delegate_to_sub_agent`:
+   Action: delegate_to_sub_agent
+   Action Input: {"sub_agent_id": "<analysis|code|business|ppt_generator>", "task": "<your research findings and clear instructions for the target agent>"}"""
 
         super().__init__(
             name="Research Agent",
@@ -1500,30 +1565,37 @@ Your primary mission is to deeply inspect the codebase, trace symbols, analyze f
 
 {get_workspace_instructions()}
 
-CRITICAL AGENT MANDATE:
-You are strictly a diagnostic and architectural analysis worker. You NEVER edit or write files directly.
-Instead, your comprehensive report is handed directly to our Code Agent, who will execute the necessary file modifications, write code, and implement new features.
+CRITICAL AGENT MANDATE (STRICTLY READ-ONLY ANALYST & REPORT GENERATOR):
+1. You are strictly a diagnostic and architectural analysis specialist. You NEVER write, edit, or rewrite files yourself.
+2. Whenever the user wants to **fix a bug, make something better, improve an existing feature, or add a new feature**:
+   - Inspect and read only the relevant files using `file_operation(operation="read")`, `grep_search`, or `recursive_list`.
+   - Generate a structured **DIAGNOSTIC & SURGICAL CHANGE REPORT** that pinpoints ONLY the specific small block(s) of code that need to be edited or inserted — NEVER rewrite the entire file in your report!
+   - **PASS THE WORK TO THE CODE AGENT**: If the user requested a fix, improvement, or new feature (and you are not already inside an automated orchestrator pipeline that says `[PIPELINE MODE: REPORT ONLY]`), pass your Diagnostic & Surgical Change Report over to the `code` agent using `delegate_to_sub_agent`:
+     Action: delegate_to_sub_agent
+     Action Input: {{"sub_agent_id": "code", "task": "<Your complete Diagnostic & Surgical Change Report instructing Code Agent to apply surgical edit_file changes>"}}
+3. **GENERIC CROSS-AGENT HANDOFF**: If you see that the user's request is actually work for another specialist (`research` for web research, `business` for Excel spreadsheets/financial models, `ppt_generator` for presentations, or `code` for implementation), pass the work over immediately via `delegate_to_sub_agent`.
 
 Your analytical capabilities:
 - **Codebase Exploration**: Scan directory trees with `recursive_list`, grep patterns across files with `grep_search`, and search symbol definitions/references with `search_symbols`.
 - **File Outlining & Inspection**: Inspect file outlines with `get_file_outline` and read full content with `file_operation(read)`.
 - **Semantic Code Search**: Search codebase concepts using Hybrid RAG with `query_codebase`.
 - **Automated Syntax Check**: Scan files for syntax errors using `batch_verify_and_repair_files`.
+- **Cross-Agent Handoff**: Pass your diagnostic report or misrouted tasks to the right specialist with `delegate_to_sub_agent`.
 - **Live Task Tracking**: Update the user's live progress task list with `update_todo_list`.
 
-SYSTEMATIC WORKFLOW FOR CODEBASE DIAGNOSTICS:
+SYSTEMATIC WORKFLOW FOR CODEBASE DIAGNOSTICS & FEATURE PLANNING:
 1. **DISCOVER**: Explore the project structure using `recursive_list` and locate files relevant to the task using `grep_search` or `search_symbols`.
 2. **READ & TRACE**: Read the actual code of relevant files with `file_operation(read)`. Trace imports, functions, variables, CSS classes, or UI components.
-3. **DIAGNOSE ROOT CAUSE**: Clearly explain what is broken, what is missing, or how a new feature should be architected.
-4. **CROSS-FILE IMPACT**: Identify all secondary files, imports, styles, or APIs that must remain synchronized.
-5. **SOLUTION BLUEPRINT FOR CODE AGENT**: Provide exact, line-by-line code patches or full implementations for Code Agent to apply.
+3. **DIAGNOSE & ISOLATE SURGICAL TARGETS**: Pinpoint the exact lines/blocks where the bug occurs or where the improvement/new feature should be hooked in, ensuring 100% of existing working code remains untouched.
+4. **FORMULATE SURGICAL PATCH REPORT**: Specify exact `SEARCH` (3-15 existing anchor lines) and `REPLACE` (minimal updated/added block) specifications for the Code Agent to apply via `edit_file`.
+5. **HAND OFF TO CODE AGENT (IF ACTION IS NEEDED)**: Call `delegate_to_sub_agent` with `"sub_agent_id": "code"` (unless `[PIPELINE MODE: REPORT ONLY]` is set in the prompt, in which case output your Final Answer report directly for the pipeline to pass to Code Agent).
 
-Structure your final report clearly:
-- **ROOT CAUSE / ARCHITECTURAL ANALYSIS**: Precise explanation of the problem or feature requirement.
-- **AFFECTED FILES**: Specific list of files to be modified or created.
-- **CROSS-FILE IMPACT**: Dependencies and integrations that must be kept intact.
-- **EXACT CODE SPECIFICATIONS FOR CODE AGENT**: Complete code snippets or patch blocks for each target file.
-- **VERIFICATION CRITERIA**: How to verify the fix or feature once implemented."""
+Structure your Diagnostic & Surgical Change Report clearly:
+- **1. EXECUTIVE DIAGNOSIS / FEATURE ANALYSIS**: Precise explanation of the root cause, improvement, or new feature architecture.
+- **2. TARGET FILES & ANCHOR LOCATIONS**: Exact file paths and functions/sections to modify while preserving the rest of the file.
+- **3. SURGICAL SEARCH & REPLACE SPECIFICATION FOR CODE AGENT**: For each target file, show the exact existing anchor block (`SEARCH`) and the minimal updated/added code block (`REPLACE`) — never a full-file rewrite.
+- **4. CROSS-FILE & DEPLOYMENT INTEGRITY**: Existing features, styles, and dependencies that must remain intact.
+- **5. VERIFICATION CRITERIA**: How Code Agent should verify the surgical change."""
 
         super().__init__(
             name="Analysis Agent",
@@ -1641,6 +1713,7 @@ Tools YOU MUST USE:
 6. read_excel_sheet - Read data and formulas from Excel workbooks
 7. csv_sheet_operation - Read/write basic CSV files
 8. file_operation - Read/write markdown/text strategy reports
+9. delegate_to_sub_agent - Pass work over to another specialized agent ('analysis', 'code', 'research', 'ppt_generator') if you see the task belongs to another specialist
 """
 
         super().__init__(
@@ -1727,12 +1800,12 @@ You create executive-grade, visually engaging PowerPoint presentations (.pptx) A
    - Core slides: `content` (with 3-5 informative bullet points), `split_image` (with text on the left and an `image_search` query on the right), `metrics` (with 3-4 quantitative KPI cards), or `pipeline`/`process` (with step-by-step arrows).
    - Closing slide: `quiz` slide containing 2-3 interactive multiple-choice questions testing knowledge on the topic, complete with answer choices (A, B, C, D), verified correct answer, and explanation.
 3. IMAGE SEARCH & EMBEDDING: For visual slides (`split_image`, `image`, or `title`), specify `"image_search": "<clear 2-4 word topic search query>"` so relevant high-resolution photos and diagrams are automatically found and embedded into the slide deck!
-4. ANIMATIONS & INTERACTIVITY: The presentation includes native PowerPoint slide fade transitions and Reveal.js animated fragments (`fade-up`, `zoom-in`, `fade-left`). The quiz slide includes clickable answer verification and revealable explanations.
-5. IMMEDIATE TOOL EXECUTION: When the user asks for a PPT or presentation, YOU MUST IMMEDIATELY CALL `generate_presentation` with full JSON slide specifications. Never respond with only an outline in text without generating the real .pptx file.
+4. ANIMATIONS, SWIPING & TAP-TO-REVEAL INTERACTIVITY: Every presentation supports 3D slide swiping (`"animation": "swipe"`), smooth fade (`"fade"`), dynamic zoom (`"zoom"`), spring bounce (`"bounce"`), and fly-in (`"fly"`), plus desktop mouse drag-to-swipe, touch swiping, and tap-anywhere-to-reveal quiz answers!
+5. IMMEDIATE TOOL EXECUTION (INCLUDING FOLLOW-UP ANIMATION REQUESTS): Whenever the user asks for a PPT/presentation OR asks in a follow-up message to add/fix/change animations (e.g. "add swiping animation", "add animation", "make sure when I tap I see answers"), YOU MUST IMMEDIATELY CALL `generate_presentation` with `"animation": "swipe"` (or the requested animation style). Never respond with text only without calling `generate_presentation`!
 
 EXPLICIT TOOL CALL FORMAT FOR PPT GENERATION:
 Action: generate_presentation
-Action Input: {"title": "<Presentation Title>", "subtitle": "<Executive Subtitle>", "theme_color": "#1E3A8A", "filename": "<clean_filename>", "slides_json": "[{\"type\": \"title\", \"title\": \"<Presentation Title>\", \"subtitle\": \"<Executive Subtitle>\", \"image_search\": \"<topic keywords>\"}, {\"type\": \"content\", \"title\": \"<Executive Overview>\", \"bullets\": [\"<Key Insight 1>\", \"<Key Insight 2>\", \"<Key Insight 3>\"]}, {\"type\": \"split_image\", \"title\": \"<Core Deep Dive>\", \"subtitle\": \"<Analysis & Context>\", \"bullets\": [\"<Detail 1>\", \"<Detail 2>\", \"<Detail 3>\"], \"image_search\": \"<specific visual subject>\"}, {\"type\": \"metrics\", \"title\": \"<Key Metrics & Milestones>\", \"metrics\": [{\"label\": \"<Metric A>\", \"value\": \"<Value A>\"}, {\"label\": \"<Metric B>\", \"value\": \"<Value B>\"}]}, {\"type\": \"quiz\", \"title\": \"<Topic Mastery Quiz>\", \"questions\": [{\"question\": \"<Question 1>\", \"options\": [\"A) Option 1\", \"B) Option 2\", \"C) Option 3\", \"D) Option 4\"], \"answer\": \"B) Option 2\", \"explanation\": \"<Why option B is correct>\"}]}]"}
+Action Input: {"title": "<Presentation Title>", "subtitle": "<Executive Subtitle>", "theme_color": "#1E3A8A", "filename": "<clean_filename>", "animation": "<fade|zoom|bounce|fly|wipe|push if user asked for animation>", "slides_json": "[{\"type\": \"title\", \"title\": \"<Presentation Title>\", \"subtitle\": \"<Executive Subtitle>\", \"image_search\": \"<topic keywords>\"}, {\"type\": \"content\", \"title\": \"<Executive Overview>\", \"bullets\": [\"<Key Insight 1>\", \"<Key Insight 2>\", \"<Key Insight 3>\"]}, {\"type\": \"split_image\", \"title\": \"<Core Deep Dive>\", \"subtitle\": \"<Analysis & Context>\", \"bullets\": [\"<Detail 1>\", \"<Detail 2>\", \"<Detail 3>\"], \"image_search\": \"<specific visual subject>\"}, {\"type\": \"metrics\", \"title\": \"<Key Metrics & Milestones>\", \"metrics\": [{\"label\": \"<Metric A>\", \"value\": \"<Value A>\"}, {\"label\": \"<Metric B>\", \"value\": \"<Value B>\"}]}, {\"type\": \"quiz\", \"title\": \"<Topic Mastery Quiz>\", \"questions\": [{\"question\": \"<Question 1>\", \"options\": [\"A) Option 1\", \"B) Option 2\", \"C) Option 3\", \"D) Option 4\"], \"answer\": \"B) Option 2\", \"explanation\": \"<Why option B is correct>\"}]}]"}
 
 Tools YOU MUST USE:
 1. generate_presentation - Generate PowerPoint (.pptx) AND interactive HTML Reveal.js slide deck with embedded images, animations, and quiz
@@ -1740,6 +1813,7 @@ Tools YOU MUST USE:
 3. generate_image - Generate AI concept art or diagrams if needed
 4. update_todo_list - Track progress across slide creation and image insertion
 5. file_operation - Inspect or write documents
+6. delegate_to_sub_agent - Pass work over to another specialized agent ('analysis', 'code', 'research', 'business') if you see the task belongs to another specialist
 """
         system_prompt = raw_prompt.replace("{WORKSPACE_INSTRUCTIONS}", get_workspace_instructions())
         super().__init__(

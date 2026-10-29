@@ -3069,14 +3069,23 @@ export const MultiAgentHub: React.FC<MultiAgentHubProps> = ({ onOpenPlayground, 
 
                       {/* Interactive Presentation Deck Card */}
                       {!isUser && (() => {
-                        const pptxMatch = msg.content?.match(/\/api\/documents\/([a-zA-Z0-9_\-]+\.pptx)/i);
-                        const htmlMatch = msg.content?.match(/\/api\/documents\/([a-zA-Z0-9_\-]+\.html)/i);
+                        const pptxMatch = msg.content?.match(/\/api\/documents\/([a-zA-Z0-9_\-]+\.pptx)/i) ||
+                          msg.content?.match(/[\\\/]_documents[\\\/]([a-zA-Z0-9_\-]+\.pptx)/i) ||
+                          msg.content?.match(/`([a-zA-Z0-9_\-]+\.pptx)`/i);
+                        const htmlMatch = msg.content?.match(/\/api\/documents\/([a-zA-Z0-9_\-]+\.html)/i) ||
+                          msg.content?.match(/[\\\/]_documents[\\\/]([a-zA-Z0-9_\-]+\.html)/i) ||
+                          msg.content?.match(/`([a-zA-Z0-9_\-]+\.html)`/i);
                         const hasPptTool = msg.toolsExecuted?.some(t => t.toolName === 'generate_presentation');
 
                         if (pptxMatch || htmlMatch || hasPptTool) {
-                          const pptxUrl = pptxMatch ? `http://localhost:8000${pptxMatch[0]}` : null;
-                          const htmlUrl = htmlMatch ? `http://localhost:8000${htmlMatch[0]}` : null;
-                          const deckName = pptxMatch ? pptxMatch[1] : 'presentation.pptx';
+                          const baseName = pptxMatch
+                            ? pptxMatch[1].replace(/\.pptx$/i, '')
+                            : htmlMatch
+                              ? htmlMatch[1].replace(/\.html$/i, '')
+                              : 'presentation';
+                          const deckName = `${baseName}.pptx`;
+                          const pptxUrl = `http://localhost:8000/api/documents/${baseName}.pptx`;
+                          const htmlUrl = `http://localhost:8000/api/documents/${baseName}.html`;
 
                           return (
                             <div className="mt-3 p-3.5 rounded-2xl bg-gradient-to-r from-amber-950/70 to-slate-900/90 border border-amber-500/40 flex items-center justify-between gap-3 text-xs shadow-lg shadow-amber-500/10 animate-in fade-in duration-200">

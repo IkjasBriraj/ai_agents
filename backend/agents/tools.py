@@ -163,7 +163,7 @@ def robust_parse_json_fields(s: str) -> Dict[str, Any]:
         s = s.replace(code_triple_single.group(0), "")
 
     # 2. Extract standard fields (excluding content and code which can contain quotes/newlines)
-    keys = ["operation", "path", "query", "requirements", "framework", "language"]
+    keys = ["operation", "path", "query", "requirements", "framework", "language", "title", "subtitle", "filename", "theme_color", "animation", "animations", "transition"]
     for key in keys:
         pattern = rf'"{key}"\s*:\s*["\']([^"\']+)["\']'
         match = re.search(pattern, s, re.IGNORECASE)
@@ -501,6 +501,144 @@ def read_file_content(path: str) -> str:
         return f"Error reading file: {str(e)}"
 
 
+def _auto_embed_topic_images_in_markup(text: str, path: str = "") -> str:
+    """
+    Automatically find and embed real topic-related images (via Wikimedia / Wikipedia / local AI fallback)
+    into <img> tags inside HTML/JSX/TSX files created by the Code Agent, replacing generic Unsplash/placeholder
+    or missing image URLs with real topic-matched images served from /api/generated-images/.
+    """
+    try:
+        if "reveal.min.js" in text or "<img" not in text.lower():
+            return text
+
+        from .business_tools import search_and_download_image
+        from .session_context import current_agent_context
+
+        # Rewrite any relative /api/generated-images/ URLs to explicit backend URL for srcDoc iframe compatibility
+        text = re.sub(
+            r'(["\'])/api/generated-images/',
+            r'\1http://localhost:8000/api/generated-images/',
+            text
+        )
+
+        # Extract overall topic context from <title>, <h1>, or user prompt
+        title_match = re.search(r'<title[^>]*>(.*?)</title>', text, re.IGNORECASE | re.DOTALL)
+        page_title = re.sub(r'<[^>]+>', '', title_match.group(1)).strip() if title_match else ""
+        page_title = re.sub(r'\b(portfolio|website|app|application|home|welcome|dashboard|premium|professional)\b', '', page_title, flags=re.IGNORECASE).strip(" |-:")
+
+        ctx = current_agent_context.get()
+        raw_prompt = str(ctx.get("input", "") if ctx else "")
+        clean_prompt_lines = [
+            ln for ln in raw_prompt.splitlines()
+            if not ln.strip().startswith("[SYSTEM DIRECTIVE") and not ln.strip().startswith("Context Details:")
+        ]
+        user_prompt = " ".join(clean_prompt_lines).strip()
+        topic_hint = page_title or user_prompt[:60]
+        topic_hint = re.sub(
+            r'\b(create|build|make|write|generate|website|web|app|application|page|html|css|js|please|with|and|the|for|about|that|this)\b',
+            ' ',
+            topic_hint,
+            flags=re.IGNORECASE
+        )
+        topic_hint = re.sub(r'\s+', ' ', topic_hint).strip()[:45]
+
+        img_pattern = re.compile(r'<img\b[^>]*>', re.IGNORECASE)
+        matches = list(img_pattern.finditer(text))
+        if not matches:
+            return text
+
+        base_slug = re.sub(r'[^a-zA-Z0-9_]', '_', os.path.splitext(os.path.basename(path or "page"))[0].lower()).strip('_') or "web"
+        replacements = []
+
+        for idx, m in enumerate(matches[:6]):
+            img_tag = m.group(0)
+            src_m = re.search(r'src\s*=\s*(["\'])(.*?)\1', img_tag, re.IGNORECASE)
+            current_src = src_m.group(2).strip() if src_m else ""
+
+            # Keep already-embedded data URIs or local generated-images
+            if current_src.startswith("data:image/") or "generated-images/" in current_src:
+                continue
+
+            # Determine if this src should be upgraded to a real topic-matched image
+            has_topic_attr = bool(re.search(r'data-(?:topic|search|image)\s*=', img_tag, re.IGNORECASE))
+            is_stock_or_placeholder = any(
+                k in current_src.lower()
+                for k in [
+                    "unsplash.com", "picsum.photos", "placehold", "placeholder",
+                    "lorempixel", "dummyimage", "example.com", "via.placeholder", "loremflickr"
+                ]
+            )
+            is_missing_local = False
+            if current_src and not current_src.startswith(("http://", "https://", "data:", "//", "{", "$")):
+                candidate_local = os.path.join(AGENT_WORKSPACE_DIR, current_src.lstrip("/\\"))
+                if not os.path.exists(candidate_local):
+                    is_missing_local = True
+
+            if not (has_topic_attr or is_stock_or_placeholder or is_missing_local or not current_src):
+                continue
+
+            # Extract specific subject for this <img> tag
+            topic_attr_m = re.search(r'data-(?:topic|search|image)\s*=\s*(["\'])(.*?)\1', img_tag, re.IGNORECASE)
+            alt_m = re.search(r'alt\s*=\s*(["\'])(.*?)\1', img_tag, re.IGNORECASE)
+            specific_subject = ""
+            if topic_attr_m and topic_attr_m.group(2).strip():
+                specific_subject = topic_attr_m.group(2).strip()
+            elif alt_m and alt_m.group(2).strip().lower() not in ["", "image", "photo", "picture", "img", "banner", "thumbnail", "icon", "logo"]:
+                specific_subject = alt_m.group(2).strip()
+
+            # Also look at nearby heading (<h1>-<h4>) before or after the <img> tag
+            nearby_window = text[max(0, m.start() - 500):min(len(text), m.end() + 450)]
+            heading_matches = re.findall(r'<h[1-4][^>]*>(.*?)</h[1-4]>', nearby_window, re.IGNORECASE | re.DOTALL)
+            nearby_heading = ""
+            for hm in heading_matches:
+                cleaned_h = re.sub(r'<[^>]+>', ' ', hm).strip()
+                cleaned_h = re.sub(r'\s+', ' ', cleaned_h)
+                if len(cleaned_h) > 2:
+                    nearby_heading = cleaned_h[:45]
+                    break
+
+            if specific_subject and specific_subject.lower() == "profile" and nearby_heading:
+                query = f"{nearby_heading} software architecture technology"
+            elif specific_subject and nearby_heading and specific_subject.lower() not in nearby_heading.lower():
+                query = f"{specific_subject} {nearby_heading}"
+            elif specific_subject:
+                query = f"{topic_hint} {specific_subject}".strip() if topic_hint else specific_subject
+            elif nearby_heading:
+                query = f"{topic_hint} {nearby_heading}".strip() if topic_hint else nearby_heading
+            else:
+                query = topic_hint or "modern technology software architecture"
+
+            query = re.sub(r'[^a-zA-Z0-9 ]', ' ', query)
+            query = re.sub(r'\s+', ' ', query).strip()[:55] or "modern technology"
+
+            safe_q_slug = re.sub(r'[^a-zA-Z0-9_]', '_', query.lower()).strip('_')[:28]
+            img_filename = f"code_{base_slug}_{idx+1}_{safe_q_slug}"
+
+            if ctx and "queue" in ctx and "loop" in ctx:
+                ctx["loop"].call_soon_threadsafe(
+                    ctx["queue"].put_nowait,
+                    {"type": "thinking", "content": f"\n🖼️ Searching and embedding topic image ({idx+1}) for: '{query}'\n"}
+                )
+
+            found_path = search_and_download_image(query, img_filename)
+            if found_path and os.path.exists(found_path):
+                new_url = f"http://localhost:8000/api/generated-images/{os.path.basename(found_path)}"
+                if src_m:
+                    new_tag = img_tag[:src_m.start(2)] + new_url + img_tag[src_m.end(2):]
+                else:
+                    new_tag = img_tag[:-1].rstrip("/") + f' src="{new_url}">'
+                replacements.append((m.start(), m.end(), new_tag))
+
+        if replacements:
+            for start_idx, end_idx, new_tag in reversed(replacements):
+                text = text[:start_idx] + new_tag + text[end_idx:]
+
+        return text
+    except Exception as e:
+        logger.debug(f"Auto topic image embedding skipped: {e}")
+        return text
+
+
 def normalize_file_content(content: Any, path: str = "") -> str:
     """Normalize file content, unescaping literal \\n and formatting JSON files into clean multi-line text."""
     import json
@@ -531,6 +669,12 @@ def normalize_file_content(content: Any, path: str = "") -> str:
         lines = text.split("\n")
         if any("\\n" in line for line in lines):
             text = text.replace("\\n", "\n").replace("\\t", "\t").replace('\\"', '"')
+
+    # Clean up stray escaped quotes inside HTML/JSX attributes (e.g. src=\"https://...\")
+    if path and any(path.lower().endswith(ext) for ext in [".html", ".htm", ".jsx", ".tsx"]):
+        if '\\"' in text:
+            text = re.sub(r'([=\s(\[])\\"', r'\1"', text)
+            text = re.sub(r'\\"([\s>/)\];,])', r'"\1', text)
 
     # Pretty-print JSON files
     if path and path.lower().endswith(".json"):
@@ -625,6 +769,12 @@ def normalize_file_content(content: Any, path: str = "") -> str:
                 text += "\n<script>if (typeof lucide !== 'undefined') { lucide.createIcons(); }</script>\n</body>\n"
             text += "html>" if text.rstrip().endswith("<") else "</html>"
 
+        # 4. Automatically search & embed real topic-related images in HTML <img> tags
+        text = _auto_embed_topic_images_in_markup(text, path)
+
+    elif path and any(path.lower().endswith(ext) for ext in [".jsx", ".tsx"]):
+        text = _auto_embed_topic_images_in_markup(text, path)
+
     return text
 
 
@@ -640,6 +790,21 @@ def write_file_content(path: str, content: Any) -> str:
         # Resolve target file path with automatic subfolder prefixing if specified in task prompt context
         path = resolve_target_file_path(path)
         print(f"[write_file] Input path resolved to: {path}")
+
+        # Check active agent context for read-only enforcement & surgical edit protection
+        try:
+            from .session_context import current_agent_context
+            ctx = current_agent_context.get() or {}
+        except Exception:
+            ctx = {}
+
+        active_agent_type = str(ctx.get("agent_type", "")).lower()
+        if active_agent_type == "analysis":
+            return (
+                "Error: Analysis Agent is strictly READ-ONLY and must NEVER write or rewrite files. "
+                "Your role is to inspect the code, generate a structured Diagnostic & Surgical Change Report, "
+                "and pass the work over to the 'code' agent using delegate_to_sub_agent."
+            )
         
         # Security check
         if not check_and_request_permission(path):
@@ -649,6 +814,26 @@ def write_file_content(path: str, content: Any) -> str:
         # Check file extension
         if not is_allowed_extension(path):
             return f"Error: File extension not allowed. File: {path}"
+
+        # Surgical Edit Guard: Prevent full-file rewrites or snippet overwrites on existing non-trivial code files
+        if os.path.exists(path) and os.path.isfile(path):
+            try:
+                existing_size = os.path.getsize(path)
+            except Exception:
+                existing_size = 0
+            ext_check = os.path.splitext(path)[1].lower()
+            is_code_or_markup = ext_check in {'.html', '.htm', '.css', '.js', '.jsx', '.ts', '.tsx', '.py', '.vue', '.svelte'}
+            surgical_only = bool(ctx.get("surgical_edit_only", False))
+            allow_full_rewrite = bool(ctx.get("allow_full_rewrite", False))
+            if is_code_or_markup and existing_size > 200 and not allow_full_rewrite:
+                if surgical_only or len(content) < int(existing_size * 0.70):
+                    rel_name = os.path.relpath(path, AGENT_WORKSPACE_DIR) if path.startswith(AGENT_WORKSPACE_DIR) else os.path.basename(path)
+                    return (
+                    f"[SURGICAL EDIT GUARD] Blocked full-file overwrite of existing file '{rel_name}' (existing size: {existing_size} bytes, attempted write: {len(content)} bytes).\n"
+                    f"CRITICAL MANDATE: When fixing a bug, making an improvement, or adding a feature to an existing file, you MUST NOT rewrite the entire file with file_operation(write)!\n"
+                    f"Instead, use Action: edit_file with Action Input: {{'path': '{rel_name}', 'search': '<exact existing 3-15 lines from file>', 'replace': '<updated lines with your fix or new feature>'}} "
+                    f"(or file_operation with operation='patch') so ONLY the targeted block of code is modified while preserving the rest of the file intact."
+                    )
         
         # Syntax validation
         ext = os.path.splitext(path)[1].lower()
@@ -2972,7 +3157,28 @@ def _get_browser_tools() -> List[StructuredTool]:
 
 def get_code_agent_tools() -> List[StructuredTool]:
     """Get tools for Code Agent"""
+    from .business_tools import search_topic_image, generate_presentation
     return [
+        StructuredTool.from_function(
+            name="search_topic_image",
+            func=lambda x: search_topic_image(
+                safe_parse_input(x).get("query", x if isinstance(x, str) else ""),
+                safe_parse_input(x).get("filename", "")
+            ),
+            description="Search for and download a real, high-resolution image related to any topic (from Wikimedia/Wikipedia/AI fallback) and return its embeddable URL ('http://localhost:8000/api/generated-images/<name>') for use in HTML/React <img> tags. Input: dict with 'query' (topic search keywords) and optional 'filename'."
+        ),
+        StructuredTool.from_function(
+            name="generate_presentation",
+            func=lambda x: generate_presentation(
+                safe_parse_input(x).get("title", "Presentation"),
+                safe_parse_input(x).get("subtitle", ""),
+                safe_parse_input(x).get("slides_json", safe_parse_input(x).get("slides", "")),
+                safe_parse_input(x).get("theme_color", "#1E3A8A"),
+                safe_parse_input(x).get("filename", "presentation"),
+                safe_parse_input(x).get("animation", safe_parse_input(x).get("animations", safe_parse_input(x).get("transition", "")))
+            ),
+            description="Generate a professional PowerPoint presentation (.pptx) AND interactive HTML slide deck (.html) with topic-searched images, swiping animations, and tap-to-reveal quizzes. Input: dict with 'title', optional 'subtitle', 'slides_json', optional 'theme_color', 'filename', and 'animation' ('swipe', 'fade', 'zoom', 'bounce', 'fly')."
+        ),
         StructuredTool.from_function(
             name="generate_image",
             func=lambda x: _generate_image_wrapper(
@@ -3654,6 +3860,16 @@ def _get_knowledge_and_utility_tools() -> List[StructuredTool]:
             ),
             description="Convert a file between formats (CSV to JSON, JSON to CSV, Markdown to HTML). Input: dict with 'source_path' and 'target_format' ('json', 'csv', 'html')."
         ),
+        StructuredTool.from_function(
+            name="delegate_to_sub_agent",
+            func=lambda x: _delegate_to_sub_agent_entry(x),
+            description=(
+                "Pass or hand off work to another specialized agent when a task (or the next phase of a task) belongs to another specialist. "
+                "Available sub_agent_id values: 'code' (writes/edits/fixes code surgically), 'analysis' (audits/diagnoses code and generates reports), "
+                "'research' (web research & fact-finding), 'business' (financial spreadsheets, strategy & analytics), 'ppt_generator' (slide decks & presentations). "
+                "Input: dict with 'sub_agent_id' (target agent ID) and 'task' (detailed instructions, context, or diagnostic report to pass over)."
+            )
+        ),
     ]
 
 
@@ -3673,11 +3889,12 @@ def get_business_agent_tools() -> List[StructuredTool]:
             func=lambda x: generate_presentation(
                 safe_parse_input(x).get("title", "Presentation"),
                 safe_parse_input(x).get("subtitle", ""),
-                safe_parse_input(x).get("slides_json", ""),
+                safe_parse_input(x).get("slides_json", safe_parse_input(x).get("slides", "")),
                 safe_parse_input(x).get("theme_color", "#1E3A8A"),
-                safe_parse_input(x).get("filename", "presentation")
+                safe_parse_input(x).get("filename", "presentation"),
+                safe_parse_input(x).get("animation", safe_parse_input(x).get("animations", safe_parse_input(x).get("transition", "")))
             ),
-            description="Generate a professional PowerPoint presentation (.pptx) AND interactive HTML slide deck (.html). Input: dict with 'title', optional 'subtitle', 'slides_json' (JSON string array of slide objects), optional 'theme_color' hex, and 'filename'."
+            description="Generate a professional PowerPoint presentation (.pptx) AND interactive HTML slide deck (.html). Input: dict with 'title', optional 'subtitle', 'slides_json' (JSON string array of slide objects), optional 'theme_color' hex, 'filename', and optional 'animation' (e.g. 'fade', 'zoom', 'bounce', 'fly', 'wipe', 'push' when user requests animation)."
         ),
         StructuredTool.from_function(
             name="generate_excel_sheet",
@@ -3757,9 +3974,10 @@ def get_ppt_generator_tools() -> List[StructuredTool]:
                 safe_parse_input(x).get("subtitle", ""),
                 safe_parse_input(x).get("slides_json", safe_parse_input(x).get("slides", "")),
                 safe_parse_input(x).get("theme_color", "#1E3A8A"),
-                safe_parse_input(x).get("filename", "presentation")
+                safe_parse_input(x).get("filename", "presentation"),
+                safe_parse_input(x).get("animation", safe_parse_input(x).get("animations", safe_parse_input(x).get("transition", "")))
             ),
-            description="Generate a professional PowerPoint presentation (.pptx) AND interactive HTML slide deck (.html) with topic-searched images, metric cards, and process diagrams. Input: dict with 'title', optional 'subtitle', 'slides_json' (JSON string of slide objects), optional 'theme_color', optional 'filename'."
+            description="Generate a professional PowerPoint presentation (.pptx) AND interactive HTML slide deck (.html) with topic-searched images, metric cards, process diagrams, and optional animations. Input: dict with 'title', optional 'subtitle', 'slides_json' (JSON string of slide objects), optional 'theme_color', optional 'filename', and optional 'animation' ('fade', 'zoom', 'bounce', 'fly', 'wipe', 'push')."
         ),
         StructuredTool.from_function(
             name="generate_image",
@@ -3851,27 +4069,90 @@ def get_tools_by_names(tool_names: List[str]) -> List[StructuredTool]:
     return tools
 
 
-@tool
-def delegate_to_sub_agent(sub_agent_id: str, task: str) -> str:
-    """
-    Delegate a specific sub-task to a specialized sub-agent.
-    Input parameters:
-    - sub_agent_id: The ID of the sub-agent (e.g. 'code', 'research', 'analysis', or custom ID)
-    - task: The detailed task description to send to the sub-agent
-    """
+def _delegate_to_sub_agent_entry(raw_input: Any) -> str:
+    """Flexible parser entry point for delegate_to_sub_agent StructuredTool."""
+    parsed = safe_parse_input(raw_input)
+    if isinstance(parsed, dict):
+        sub_agent_id = (
+            parsed.get("sub_agent_id")
+            or parsed.get("target_agent")
+            or parsed.get("agent_id")
+            or parsed.get("agent")
+            or parsed.get("to")
+            or ""
+        )
+        task = (
+            parsed.get("task")
+            or parsed.get("report")
+            or parsed.get("instructions")
+            or parsed.get("prompt")
+            or parsed.get("message")
+            or parsed.get("content")
+            or ""
+        )
+    else:
+        sub_agent_id = ""
+        task = str(raw_input)
+    return _execute_sub_agent_handoff(str(sub_agent_id).strip(), str(task).strip())
+
+
+def _execute_sub_agent_handoff(sub_agent_id: str, task: str) -> str:
+    """Execute a cross-agent handoff with alias normalization, loop guard, and surgical context propagation."""
     try:
         from database.db import SessionLocal
         from database.models import AgentModel
         from .specialized_agents import SPECIALIZED_AGENTS, create_specialized_agent, CustomSpecializedAgent
         from .config import DEFAULT_MAIN_MODEL, DEFAULT_CODE_MODEL
-        
-        model_name = DEFAULT_MAIN_MODEL
+        from .session_context import current_agent_context
+
+        if not sub_agent_id:
+            return "Error: 'sub_agent_id' is required (e.g. 'code', 'analysis', 'research', 'business', 'ppt_generator')."
+        if not task:
+            return "Error: 'task' description or report is required when passing work to another agent."
+
+        # Normalize common agent ID aliases
+        alias_map = {
+            "code_agent": "code",
+            "coding": "code",
+            "coder": "code",
+            "developer": "code",
+            "analysis_agent": "analysis",
+            "analyzer": "analysis",
+            "analyst": "analysis",
+            "audit": "analysis",
+            "research_agent": "research",
+            "researcher": "research",
+            "business_agent": "business",
+            "finance": "business",
+            "ppt": "ppt_generator",
+            "ppt_agent": "ppt_generator",
+            "presentation_agent": "ppt_generator",
+        }
+        normalized_id = alias_map.get(sub_agent_id.lower().strip(), sub_agent_id.lower().strip())
+
+        ctx = current_agent_context.get() or {}
+        if ctx.get("in_analyze_and_fix_pipeline") and normalized_id == "code":
+            # Inside Orchestrator's _analyze_and_fix Phase 2, Orchestrator automatically runs CodeAgent in Phase 3 with this report
+            return (
+                f"[HANDOFF QUEUED TO CODE AGENT]\n"
+                f"Your Diagnostic & Surgical Change Report has been recorded and will now be executed surgically by the Code Agent:\n\n{task}"
+            )
+
+        delegation_depth = int(ctx.get("_delegation_depth", 0))
+        if delegation_depth >= 2:
+            return (
+                f"Notice: Cross-agent handoff depth limit ({delegation_depth}) reached. "
+                f"Please return your current report/output directly as your Final Answer."
+            )
+
+        model_name = ctx.get("main_model") or DEFAULT_MAIN_MODEL
+        code_model_name = ctx.get("code_model") or DEFAULT_CODE_MODEL
         ollama_base_url = "http://localhost:11434"
-        
+
         session = SessionLocal()
         db_agent = None
         try:
-            db_agent = session.query(AgentModel).filter(AgentModel.id == sub_agent_id).first()
+            db_agent = session.query(AgentModel).filter(AgentModel.id == normalized_id).first()
             if db_agent:
                 model_name = db_agent.base_model or model_name
                 ollama_base_url = db_agent.ollama_base_url or ollama_base_url
@@ -3879,31 +4160,75 @@ def delegate_to_sub_agent(sub_agent_id: str, task: str) -> str:
             print(f"Error querying db for sub-agent: {e}")
         finally:
             session.close()
-            
+
         agent = None
         if db_agent:
             agent = CustomSpecializedAgent(db_agent, ollama_base_url)
-        elif sub_agent_id in SPECIALIZED_AGENTS:
-            agent_model = DEFAULT_CODE_MODEL if sub_agent_id == "code" else model_name
-            agent = create_specialized_agent(sub_agent_id, agent_model, ollama_base_url)
-            
+        elif normalized_id in SPECIALIZED_AGENTS:
+            agent_model = code_model_name if normalized_id == "code" else model_name
+            agent = create_specialized_agent(normalized_id, agent_model, ollama_base_url)
+
         if not agent:
             return f"Error: Sub-agent '{sub_agent_id}' not found. Available: {list(SPECIALIZED_AGENTS.keys())}"
-            
-        from .session_context import current_agent_context
-        ctx = current_agent_context.get()
+
         session_id = ctx.get("session_id", "default") if ctx else "default"
-        
+        thinking_cb = ctx.get("thinking_callback") if ctx else None
+        parent_agent = ctx.get("agent_type", "specialist")
+
+        if thinking_cb:
+            try:
+                thinking_cb(f"\n🤝 **Passing work from `{parent_agent}` agent over to `{normalized_id}` agent...**\n")
+            except Exception:
+                pass
+
         from .memory import multi_agent_memory
         history = multi_agent_memory.get_messages(session_id)
-        
-        print(f"Parent Agent delegating task to '{sub_agent_id}'...")
-        response = agent.process(task, context=ctx, chat_history=history)
-        return response
-        
+
+        child_ctx = dict(ctx) if isinstance(ctx, dict) else {}
+        child_ctx["_delegation_depth"] = delegation_depth + 1
+        child_ctx["agent_type"] = normalized_id
+        child_ctx["delegated_from"] = parent_agent
+
+        # If handing over to Code Agent for a fix, improvement, or feature addition on existing code, enforce surgical edits
+        if normalized_id == "code":
+            task_lower = task.lower()
+            is_surgical_task = (
+                parent_agent == "analysis"
+                or any(kw in task_lower for kw in [
+                    "fix", "bug", "error", "issue", "improve", "better", "enhance", "update",
+                    "modify", "change", "add feature", "add a", "surgical", "patch", "edit_file", "report"
+                ])
+            )
+            if is_surgical_task:
+                child_ctx["surgical_edit_only"] = True
+                task = (
+                    f"[HANDOFF FROM {str(parent_agent).upper()} AGENT - SURGICAL CODE EXECUTION REQUIRED]\n"
+                    f"STRICT MANDATE: Modify ONLY the necessary code blocks in existing files using `edit_file` "
+                    f"({{'path': '...', 'search': '...', 'replace': '...'}}) or `file_operation(operation='patch')`. "
+                    f"NEVER rewrite an entire existing file from scratch!\n\n"
+                    f"Task / Diagnostic Report to Execute:\n{task}"
+                )
+
+        print(f"Parent Agent ('{parent_agent}') passing task over to '{normalized_id}'...")
+        token = current_agent_context.set(child_ctx)
+        try:
+            response = agent.process(task, context=child_ctx, chat_history=history)
+        finally:
+            current_agent_context.reset(token)
+
+        return f"### 🤝 Handoff Result from `{normalized_id}` Agent:\n\n{response}"
+
     except Exception as e:
         import traceback
         return f"Error delegating task to sub-agent: {str(e)}\n{traceback.format_exc()}"
+
+
+@tool
+def delegate_to_sub_agent(sub_agent_id: str, task: str) -> str:
+    """
+    Delegate or pass a specific task or diagnostic report to another specialized agent ('code', 'analysis', 'research', 'business', 'ppt_generator').
+    """
+    return _execute_sub_agent_handoff(sub_agent_id, task)
 
 
 # Made with Bob

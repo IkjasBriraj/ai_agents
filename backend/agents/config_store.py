@@ -10,12 +10,38 @@ CONFIG_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "age
 
 DEFAULT_CONFIG = {
     "agent_tools": {
-        "code": ["generate_image", "execute_code", "generate_code", "file_operation", "recursive_list", "grep_search", "create_project", "analyze_code", "execute_terminal", "schedule_task", "verify_app_browser_console", "browser_open_url", "browser_get_console_errors", "browser_take_screenshot", "browser_vision_audit"],
-        "research": ["web_search", "summarize_text"],
-        "analysis": ["analyze_code", "file_operation", "recursive_list", "grep_search", "verify_app_browser_console", "browser_open_url", "browser_get_console_errors", "browser_take_screenshot", "browser_vision_audit"],
-        "business": ["generate_image", "web_search", "fetch_web_page", "generate_presentation", "generate_excel_sheet", "read_excel_sheet", "csv_sheet_operation", "file_operation"],
-        "ppt_generator": ["generate_presentation", "generate_image", "web_search", "fetch_web_page", "update_todo_list", "file_operation"],
-        "ppt-generater": ["generate_presentation", "generate_image", "web_search", "fetch_web_page", "update_todo_list", "file_operation"]
+        "code": [
+            "search_topic_image", "generate_presentation", "generate_image",
+            "batch_verify_and_repair_files", "execute_code", "generate_code",
+            "file_operation", "recursive_list", "grep_search", "edit_file",
+            "git_inspect", "search_symbols", "get_file_outline", "query_codebase",
+            "create_project", "analyze_code", "execute_terminal", "schedule_task",
+            "verify_app_browser_console", "verify_project_build",
+            "browser_open_url", "browser_get_console_errors",
+            "browser_take_screenshot", "browser_vision_audit"
+        ],
+        "research": ["web_search", "fetch_web_page", "firecrawl", "summarize_text"],
+        "analysis": [
+            "analyze_code", "file_operation", "recursive_list", "grep_search",
+            "search_symbols", "get_file_outline", "query_codebase",
+            "batch_verify_and_repair_files", "verify_app_browser_console",
+            "browser_open_url", "browser_get_console_errors",
+            "browser_take_screenshot", "browser_vision_audit",
+            "delegate_to_sub_agent"
+        ],
+        "business": [
+            "search_topic_image", "generate_image", "web_search", "fetch_web_page",
+            "generate_presentation", "generate_excel_sheet", "read_excel_sheet",
+            "csv_sheet_operation", "file_operation"
+        ],
+        "ppt_generator": [
+            "generate_presentation", "search_topic_image", "generate_image",
+            "web_search", "fetch_web_page", "update_todo_list", "file_operation"
+        ],
+        "ppt-generater": [
+            "generate_presentation", "search_topic_image", "generate_image",
+            "web_search", "fetch_web_page", "update_todo_list", "file_operation"
+        ]
     },
     "allowed_paths": [],
     "allowed_commands": [],
@@ -41,11 +67,15 @@ def load_config() -> dict:
                 config = json.load(f)
                 
                 # Merge with default config to ensure completeness
+                merged_agent_tools = {}
+                all_agent_keys = set(DEFAULT_CONFIG["agent_tools"].keys()) | set(config.get("agent_tools", {}).keys())
+                for k in all_agent_keys:
+                    default_list = DEFAULT_CONFIG["agent_tools"].get(k, [])
+                    saved_list = config.get("agent_tools", {}).get(k, [])
+                    merged_agent_tools[k] = list(dict.fromkeys(saved_list + default_list))
+
                 merged = {
-                    "agent_tools": {
-                        **DEFAULT_CONFIG["agent_tools"],
-                        **config.get("agent_tools", {})
-                    },
+                    "agent_tools": merged_agent_tools,
                     "allowed_paths": config.get("allowed_paths", []),
                     "allowed_commands": config.get("allowed_commands", []),
                     "default_main_model": config.get("default_main_model", DEFAULT_CONFIG["default_main_model"]),
@@ -75,9 +105,7 @@ def save_config(config: dict) -> None:
     if "allowed_paths" in config:
         for path in config["allowed_paths"]:
             if path and path.strip():
-                # Store absolute normalized paths
                 normalized_path = os.path.abspath(path.strip())
-                # Never treat an entire filesystem/drive as a safe zone.
                 if os.path.dirname(normalized_path) == normalized_path:
                     continue
                 allowed_paths.append(normalized_path)
@@ -108,15 +136,16 @@ def save_config(config: dict) -> None:
 COMMON_DEFAULT_TOOLS = [
     "save_personal_memory", "search_personal_memory", "extract_pdf_text",
     "ocr_extract_image", "get_local_weather", "get_system_status", "convert_file_format",
-    "update_todo_list"
+    "update_todo_list", "delegate_to_sub_agent"
 ]
+
 
 def get_enabled_tools_for_agent(agent_type: str) -> list:
     """Get list of enabled tools for a specific agent type"""
     config = load_config()
     configured = config.get("agent_tools", {}).get(agent_type, [])
-    # Always include common personal knowledge & utility tools
-    return list(dict.fromkeys(configured + COMMON_DEFAULT_TOOLS))
+    default_for_type = DEFAULT_CONFIG["agent_tools"].get(agent_type, [])
+    return list(dict.fromkeys(configured + default_for_type + COMMON_DEFAULT_TOOLS))
 
 
 def get_allowed_paths() -> list:
